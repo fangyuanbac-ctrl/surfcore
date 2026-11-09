@@ -750,6 +750,9 @@ export function startScheduler(ctx, opts) {
   }
 
   let waking = false
+  // 2026-11-10：skip 判定原先每次 tick 都写一行 dm-tick-err.log（约 1440 行/天、只增不减）。
+  // 改成只在判定结果变化时写，排查照样够用。
+  let lastSkipLogSig = ''
   async function tick() {
     if (waking) return
     if (!ctx.sessionController) return           // 服务还没就绪 → 下一 tick 再来
@@ -771,12 +774,17 @@ export function startScheduler(ctx, opts) {
 
     // ①-0 掷到「不看」→ **也要叫醒她**（2026-10-18 主人定：醒或不醒都要写日记 ✓）
     //    以前这个分支只是被重算掉 ✗ → 那一趟等于什么都没发生、日记也没有 ✗
-    // 2026-10-20 诊断：把 skip 的判定输入写进 dm-tick-err.log（每次 tick 都记）
+    // 2026-10-20 诊断日志：2026-11-10 改成只在判定结果变化时写（原本每 tick 一行，全天约 1440 行）
     if (st && st.date === t && st.action === 'skip') {
-      try {
-        fs.appendFileSync(path.join(platformDir(), 'dm-tick-err.log'),
-          `[skip-check] ${new Date().toISOString()} fired=${st.fired} at=${st.at} endAt=${st.endAt} nowMin=${nowMin()} pass=${!st.fired && nowMin() >= Number(st.at ?? st.endAt ?? 0)}\n`)
-      } catch {}
+      const skipPass = !st.fired && nowMin() >= Number(st.at ?? st.endAt ?? 0)
+      const skipSig = `${st.date}|${st.fired}|${st.at}|${st.endAt}|${skipPass}`
+      if (skipSig !== lastSkipLogSig) {
+        lastSkipLogSig = skipSig
+        try {
+          fs.appendFileSync(path.join(platformDir(), 'dm-tick-err.log'),
+            `[skip-check] ${new Date().toISOString()} fired=${st.fired} at=${st.at} endAt=${st.endAt} nowMin=${nowMin()} pass=${skipPass}（判定变化才记）\n`)
+        } catch {}
+      }
     }
     if (st && st.date === t && st.action === 'skip' && !st.fired && nowMin() >= Number(st.at ?? st.endAt ?? 0)) {
       waking = true
