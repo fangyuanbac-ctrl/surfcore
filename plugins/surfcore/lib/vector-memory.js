@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 向量记忆（插件宿主侧维护器）。
  *
  * 与叙事记忆卡完全独立：
@@ -412,6 +412,10 @@ export function startVectorMemoryTimer({ log = () => {}, config = null } = {}) {
   }
   let stopped = false;
   let timer = null;
+  // 失败日志节流：Embedding 服务没装/没跑时会每个 tick 报一次，太吵；
+  // 同一个错误每小时最多记一次，错误码变了立即记。
+  let lastFailKey = '';
+  let lastFailLogAt = 0;
   const tick = async () => {
     if (stopped) return null;
     try {
@@ -423,7 +427,15 @@ export function startVectorMemoryTimer({ log = () => {}, config = null } = {}) {
       } else if (result.changed) {
         log(`向量记忆已整理：新增 ${result.added ?? 0} 条，编码 ${result.embedded ?? 0} 条，索引 ${result.status.indexed} 条`);
       }
-      if (!result.ok) log(`向量记忆整理失败：${result.code} ${result.error}`);
+      if (!result.ok) {
+        const failKey = String(result.code || '') + '|' + String(result.error || '');
+        const nowMs = Date.now();
+        if (failKey !== lastFailKey || nowMs - lastFailLogAt > 60 * 60_000) {
+          lastFailKey = failKey;
+          lastFailLogAt = nowMs;
+          log(`向量记忆整理失败：${result.code} ${result.error}`);
+        }
+      }
       return result;
     } catch (error) {
       log('向量记忆整理异常：', error?.message ?? error);

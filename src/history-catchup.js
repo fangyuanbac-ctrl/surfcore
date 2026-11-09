@@ -73,6 +73,26 @@ export function historyWatermark(state, { now = Date.now(), maxAgeMs, toleranceM
 }
 
 /**
+ * 「漏消息找回」模式的水位（毫秒时间戳）。
+ *
+ * 为什么需要它：正常水位取 lastIncomingAt / lastHistoryMessageTime / recentMessages 的
+ * 最大值——只要桥接后来又收到过更新的消息，水位就会越过「没收到的那一段」。典型场景：
+ * 双开两个 QQ 号时 OneBot 端口撞车，桥接连错账号；期间好友消息只到了 SnowLuma hook，
+ * 没进桥接。等桥接改连正确账号后，状态里的水位已经被后来的消息推高，正常补历史会
+ * 判定「都太旧」而一条都不补（2026-11-09 实测 fetched=30 / incoming=0）。
+ *
+ * 所以找回模式**不看**状态水位，固定回看 windowMinutes（默认 180 分钟，受
+ * maxAgeMinutes 上界约束），把这段时间里本地没存过的消息当历史消息补进来；
+ * 重复由 messageId 去重兜底，是否唤醒由 socialV2.history.wake 决定。
+ */
+export function recoveryWatermark({ now = Date.now(), maxAgeMs, windowMinutes = 180 } = {}) {
+  const windowMs = Number.isFinite(maxAgeMs) && maxAgeMs > 0 ? maxAgeMs : DEFAULT_HISTORY_CATCHUP.maxAgeMinutes * 60_000;
+  const minutes = Math.max(1, Number(windowMinutes) || 180);
+  const lookbackMs = Math.min(windowMs, minutes * 60_000);
+  return Math.max(now - windowMs, now - lookbackMs);
+}
+
+/**
  * 从历史消息候选里挑出真正要补的。
  *
  * 候选必须是桥接已经归一化过的对象：

@@ -1,4 +1,4 @@
-// QQ ↔ DeepSeek Harness 桥接主程序。
+﻿// QQ ↔ DeepSeek Harness 桥接主程序。
 //
 // 链路：
 //   QQ 消息 → SnowLuma (OneBot v11 WS) → 本进程 → DSH Web API session.prompt
@@ -24,6 +24,7 @@ import { compactModelMessage } from './qq-model-view.js';
 import { atInfo } from './qq-at.js';
 import {
   historyWatermark, normalizeHistoryConfig,
+  recoveryWatermark,
   selectMissedHistory, summarizeHistoryCatchup,
 } from './history-catchup.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
@@ -6938,10 +6939,16 @@ async function main() {
         }
         // 上线补历史：控制台手动触发一次（与启动/账号上线走同一条路径）。
         // 只读 QQ 历史 + 写本地状态，不直接发消息；是否唤醒由 socialV2.history.wake 决定。
+        // body.recoverMissed=true 走「漏消息找回」：忽略水位、固定回看 windowMinutes
+        // （默认 180），用于桥接曾经连错账号/降级导致状态水位越过漏收时段的情况。
         if (req.method === 'POST' && url.pathname === '/api/socialV2/history-catchup') {
           const body = await readBody();
           try {
-            const result = await runHistoryCatchUp('manual', { force: body.force === true });
+            const result = await runHistoryCatchUp('manual', {
+              force: body.force === true,
+              recoverMissed: body.recoverMissed === true,
+              windowMinutes: Number.isFinite(Number(body.windowMinutes)) ? Number(body.windowMinutes) : undefined
+            });
             sendJson(result);
           } catch (error) {
             sendJson({ ok: false, error: error?.message ?? String(error) }, 500);
@@ -15210,7 +15217,8 @@ async function main() {
         dayCount: tokenWake.dayCount ?? null,
         maxDay: tokenWake.maxDay ?? null,
       };
-      logThrottled(`token-guard:${key}`, 10 * 60_000, `[token-guard] 跳过唤醒 ${key}（${reason}）：${tokenWake.error}`);
+      // 额度/防爆破跳过是预期行为，每 10 分钟一条太吵；同 key 每小时最多记一次。
+      logThrottled(`token-guard:${key}`, 60 * 60_000, `[token-guard] 跳过唤醒 ${key}（${reason}）：${tokenWake.error}`);
       if (tokenWake.retryAfterMs > 0 && !st.tokenRetryTimer) {
         const cap = tokenWake.reason === 'day' ? 10 * 60_000 : 60_000;
         const waitMs = Math.min(cap, Math.max(1000, Math.round(tokenWake.retryAfterMs)));
@@ -15748,12 +15756,16 @@ async function main() {
     return summary;
   }
 
-  async function catchUpHistoryForConversation({ key, kind, id }, conf, trigger) {
+  async function catchUpHistoryForConversation({ key, kind, id }, conf, trigger, { recoverMissed = false, windowMinutes } = {}) {
     const st = getSocialV2State(key);
     const maxAgeMs = conf.maxAgeMinutes * 60_000;
     // 水位必须在 fetch 之前算：fetch 期间可能来实时消息，把 lastIncomingAt 推到现在；
     // 如果 fetch 后再算，会把真正错过的历史消息误判成“太旧”而丢掉。
-    const watermark = historyWatermark(st, { now: Date.now(), maxAgeMs });
+    // recoverMissed=true 时不看状态水位，固定回看 windowMinutes：用于「桥接曾经连错账号/
+    // 降级，水位已经越过漏收时段」的补救（见 recoveryWatermark 注释）。
+    const watermark = recoverMissed
+      ? recoveryWatermark({ now: Date.now(), maxAgeMs, windowMinutes })
+      : historyWatermark(st, { now: Date.now(), maxAgeMs });
     const raw = await fetchOneBotHistory(kind, id, conf.limit);
     if (!raw) return { key, ok: false };
     const candidates = [];
@@ -15771,12 +15783,12 @@ async function main() {
       wakeScheduled = true;
     }
     if (summary.total > 0) {
-      log(`[history] ${key} 补回 ${summary.incoming} 条群友消息 / ${summary.self} 条自己的旧消息（${trigger}）`);
+      log(`[history] ${key} 补回 ${summary.incoming} 条群友消息 / ${summary.self} 条自己的旧消息（${trigger}${recoverMissed ? '，找回模式' : ''}）`);
     }
     return { key, ok: true, fetched: candidates.length, ...summary, wakeScheduled };
   }
 
-  async function runHistoryCatchUp(trigger = 'online', { force = false } = {}) {
+  async function runHistoryCatchUp(trigger = 'online', { force = false, recoverMissed = false, windowMinutes } = {}) {
     const conf = historyCatchUpConfig();
     if (!conf.enabled) return { ok: true, disabled: true, results: [] };
     if (currentMode !== 'reserved2' || cfg.socialV2?.enabled === false) {
@@ -15798,7 +15810,7 @@ async function main() {
       const results = [];
       for (const target of targets) {
         try {
-          results.push(await catchUpHistoryForConversation(target, conf, trigger));
+          results.push(await catchUpHistoryForConversation(target, conf, trigger, { recoverMissed, windowMinutes }));
         } catch (error) {
           results.push({ key: target.key, ok: false, error: error?.message ?? String(error) });
           log(`[history] ${target.key} 补历史异常：${error?.message ?? error}`);
@@ -15810,9 +15822,9 @@ async function main() {
         total: acc.total + (Number(item?.total) || 0)
       }), { incoming: 0, self: 0, total: 0 });
       if (summary.total > 0) {
-        log(`[history] 上线补历史完成（${trigger}）：${results.filter((item) => Number(item?.total) > 0).length} 个会话，共 ${summary.total} 条`);
+        log(`[history] 上线补历史完成（${trigger}${recoverMissed ? '，找回模式' : ''}）：${results.filter((item) => Number(item?.total) > 0).length} 个会话，共 ${summary.total} 条`);
       }
-      return { ok: true, trigger, targets: targets.length, results, ...summary };
+      return { ok: true, trigger, recoverMissed, targets: targets.length, results, ...summary };
     })().finally(() => { historyCatchUpRunning = null; });
     return historyCatchUpRunning;
   }

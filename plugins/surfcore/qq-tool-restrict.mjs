@@ -127,6 +127,13 @@ const LOCAL_EXECUTION_TOOLS = [
   'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete',
   // 已装但当前未进 bundles 的插件（一旦加回就是新口子）
   'dev_mode_set', 'dev_mode_status', 'dev_mode_subagent',
+  // 2026-11-09 对账：DSH 0.2.1 的「持久终端」与「切换工作目录」同样是本地执行能力。
+  // 之前漏在名单外 ⇒ 没被 tools.restrict 从 schema 隐藏，模型在 QQ 会话里看得见、
+  // 调用后被执行期白名单拒绝（实际现象：terminal_open / working_directory 都被拒，
+  // 白耗一个回合；用户 2026-11-08 在 QQ 私聊里碰到）。执行白名单只是兜底，
+  // 注册期隐藏才是 L7 的要求，所以这些名字必须补进来。
+  'terminal_open', 'terminal_list', 'terminal_read', 'terminal_send', 'terminal_close', 'terminal_signal',
+  'working_directory',
 ]
 
 const KNOWN_DANGEROUS_GLOBAL_TOOLS = [
