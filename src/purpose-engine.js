@@ -31,6 +31,8 @@ export const DEFAULT_PURPOSE_CONFIG = Object.freeze({
   dailyMax: 4,
   quietStart: '23:30',
   quietEnd: '08:30',
+  // 2026-11-10：额外的安静时段（可多个），和 quietStart/quietEnd 叠加。
+  quietWindows: [],
   // 主人最近说过话 / 她最近发过言时先不打扰，避免在正在进行的聊天里硬插一句。
   idleThresholdMs: 30 * 60 * 1000,
   materialWindowHours: 72,
@@ -108,31 +110,73 @@ function minutesOfDay(at) {
   return d.getHours() * 60 + d.getMinutes();
 }
 
-/** 安静时段是否包含 now；quietStart === quietEnd 视为不启用。 */
-export function inQuietHours(now, config = DEFAULT_PURPOSE_CONFIG) {
-  const start = parseClock(config.quietStart, '23:30');
-  const end = parseClock(config.quietEnd, '08:30');
-  if (start.text === end.text) return false;
-  const s = start.hh * 60 + start.mm;
-  const e = end.hh * 60 + end.mm;
-  const m = minutesOfDay(now);
-  return s < e ? (m >= s && m < e) : (m >= s || m < e);
+/** 解析时钟字符串；非法返回 null（用于用户配置的 quietWindows 数组，不能静默回退成默认值）。 */
+function clockOrNull(value) {
+  const m = /^(\d{1,2})[:：](\d{2})$/.exec(String(value ?? '').trim());
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!(hh >= 0 && hh <= 23) || !(mm >= 0 && mm <= 59)) return null;
+  return { hh, mm, text: clockText(hh, mm) };
 }
 
-/** 下一个「安静结束」时刻（严格晚于 now）。 */
+/**
+ * 安静时段定义（分钟区间，支持跨零点）。
+ * 2026-11-10：除旧的单窗口 quietStart/quietEnd 外，支持 `quietWindows: [{start,end}, …]`
+ * （主人要「白天 09:00–18:00 安静 + 夜里 23:30–08:30 安静」两个窗口，旧字段表达不了）。
+ */
+function quietWindowDefs(config) {
+  const defs = [];
+  const start = clockOrNull(config?.quietStart);
+  const end = clockOrNull(config?.quietEnd);
+  if (start && end && start.text !== end.text) {
+    defs.push({ s: start.hh * 60 + start.mm, e: end.hh * 60 + end.mm });
+  }
+  for (const w of Array.isArray(config?.quietWindows) ? config.quietWindows : []) {
+    const s = clockOrNull(w?.start);
+    const e = clockOrNull(w?.end);
+    if (!s || !e || s.text === e.text) continue;
+    if (defs.some((d) => d.s === s.hh * 60 + s.mm && d.e === e.hh * 60 + e.mm)) continue;
+    defs.push({ s: s.hh * 60 + s.mm, e: e.hh * 60 + e.mm });
+  }
+  return defs;
+}
+
+/** 安静时段是否包含 now；start === end 视为不启用。多个窗口任中一个即算安静。 */
+export function inQuietHours(now, config = DEFAULT_PURPOSE_CONFIG) {
+  const m = minutesOfDay(now);
+  for (const { s, e } of quietWindowDefs(config)) {
+    const hit = s < e ? (m >= s && m < e) : (m >= s || m < e);
+    if (hit) return true;
+  }
+  return false;
+}
+
+/** 下一个「安静结束」时刻（严格晚于 now；多窗口取最早的结束点）。 */
 export function quietEndAfter(now, config = DEFAULT_PURPOSE_CONFIG) {
-  const end = parseClock(config.quietEnd, '08:30');
-  const d = new Date(now);
-  d.setHours(end.hh, end.mm, 0, 0);
-  while (d.getTime() <= now) d.setDate(d.getDate() + 1);
-  return d.getTime();
+  const defs = quietWindowDefs(config);
+  if (!defs.length) {
+    const d = new Date(now);
+    d.setHours(8, 30, 0, 0);
+    while (d.getTime() <= now) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  let best = 0;
+  for (const { e } of defs) {
+    for (let day = 0; day <= 1; day += 1) {
+      const d = new Date(now);
+      d.setDate(d.getDate() + day);
+      d.setHours(Math.floor(e / 60), e % 60, 0, 0);
+      if (d.getTime() > now && (!best || d.getTime() < best)) best = d.getTime();
+    }
+  }
+  if (best) return best;
+  return now + 8 * HOUR;
 }
 
 /** 下一天的起点（安静结束优先；没设安静时段就取次日 00:05）。 */
 export function nextDayStartAfter(now, config = DEFAULT_PURPOSE_CONFIG) {
-  const start = parseClock(config.quietStart, '23:30');
-  const end = parseClock(config.quietEnd, '08:30');
-  if (start.text !== end.text) return quietEndAfter(now, config);
+  if (quietWindowDefs(config).length) return quietEndAfter(now, config);
   const d = new Date(now);
   d.setHours(0, 5, 0, 0);
   while (d.getTime() <= now) d.setDate(d.getDate() + 1);
@@ -155,6 +199,15 @@ export function normalizePurposeConfig(input = {}, { ownerQQ = '' } = {}) {
     dailyMax: clampInt(src.dailyMax, DEFAULT_PURPOSE_CONFIG.dailyMax, 0, 24),
     quietStart: parseClock(src.quietStart, DEFAULT_PURPOSE_CONFIG.quietStart).text,
     quietEnd: parseClock(src.quietEnd, DEFAULT_PURPOSE_CONFIG.quietEnd).text,
+    // 2026-11-10：额外安静时段数组（如白天 09:00–18:00），与 quietStart/quietEnd 叠加生效。
+    quietWindows: (Array.isArray(src.quietWindows) ? src.quietWindows : [])
+      .map((w) => {
+        const s = clockOrNull(w?.start);
+        const e = clockOrNull(w?.end);
+        return s && e && s.text !== e.text ? { start: s.text, end: e.text } : null;
+      })
+      .filter(Boolean)
+      .slice(0, 6),
     idleThresholdMs: clampInt(src.idleThresholdMs, DEFAULT_PURPOSE_CONFIG.idleThresholdMs, 0, 12 * HOUR),
     materialWindowHours: clampInt(src.materialWindowHours, DEFAULT_PURPOSE_CONFIG.materialWindowHours, 1, 24 * 14),
     biliWindowDays: clampInt(src.biliWindowDays, DEFAULT_PURPOSE_CONFIG.biliWindowDays, 1, 60),
