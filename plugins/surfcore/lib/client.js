@@ -1458,7 +1458,9 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("limits.minePerPerson", "动态回复 / 人 / 类 / 天", "默认 1", "number", { min: 0, max: 20 }),
         F("limits.globalMin", "任意两条发言间隔（分钟）", "默认 2；0 = 不冷却", "number", { min: 0, max: 120 }),
         F("limits.perUpMin", "同一 UP 冷却（分钟）", "默认 10", "number", { min: 0, max: 1440 }),
-        F("limits.perVideoMin", "同一视频冷却（分钟）", "默认 60", "number", { min: 0, max: 1440 }),
+        F("limits.perVideoMin", "同一视频冷却（分钟）", "默认 60（只约束普通评论）", "number", { min: 0, max: 1440 }),
+        F("limits.replyPerVideoWindowMin", "同一视频回复窗口（分钟）", "默认 60；只约束回复/搭话的密度", "number", { min: 0, max: 1440 }),
+        F("limits.replyPerVideoMax", "同一视频回复上限（条/窗口）", "默认 2；0 = 不限（不推荐）", "number", { min: 0, max: 100 }),
         F("limits.perThreadMin", "同一条评论冷却（分钟）", "默认 1440（24 小时）", "number", { min: 0, max: 10080 }),
       ]},
       { group: "四类动态", note: "每类一天一条；时段从该类的点开始，到下一类启用的点为止。前缀留空 = 不加固定开头。", fields: [

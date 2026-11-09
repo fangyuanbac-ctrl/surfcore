@@ -16,6 +16,8 @@ export const LIMIT_RULES = {
   perUpMin:       { def: 10,  min: 0, max: 1440,  label: '同一 UP 冷却（分钟）' },
   perVideoMin:    { def: 60,  min: 0, max: 1440,  label: '同一视频冷却（分钟）' },
   perThreadMin:   { def: 1440, min: 0, max: 10080, label: '同一条评论冷却（分钟）' },
+  replyPerVideoWindowMin: { def: 60, min: 0, max: 1440, label: '同一视频回复窗口（分钟）' },
+  replyPerVideoMax:       { def: 2,  min: 0, max: 100,  label: '同一视频回复上限（条/窗口）' },
   globalMin:      { def: 2,   min: 0, max: 120,   label: '任意两条发言间隔（分钟）' },
 }
 

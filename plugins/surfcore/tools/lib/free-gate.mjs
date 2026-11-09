@@ -5,8 +5,8 @@
 //
 // 账本（都用 --auto 判定"是她自己说的"）：
 //   · comment   顶层评论      30/天 · 同 UP 10 分钟 1 条 · 同视频 60 分钟 1 条
-//   · reply     回找我的人    50/天 · 同一条评论 24 小时 1 次
-//   · ta        主动搭话      15/天 · 同一条评论 24 小时 1 次
+//   · reply     回找我的人    50/天 · 同一条评论 24 小时 1 次 · 同一视频 60 分钟 ≤2 条
+//   · ta        主动搭话      15/天 · 同一条评论 24 小时 1 次 · 同一视频 60 分钟 ≤2 条
 //   · mine:<k>  回自己动态    **按四类分开记**：每类 10/天 · 每类每人 1 条
 //                 k = best / game / anime / gaming（2026-10-21 管理员定）
 //   · share     分享型        ↑ 不在这里管（评分/rank/7 天判重在 quota.mjs）
@@ -108,6 +108,17 @@ export function checkFree({ kind = 'comment', upMid = '', bvid = '', parent = ''
       const dup = log.find((x) => String(x.parent ?? '') === String(parent)
         && now - new Date(x.at).getTime() < L.perThreadMin * 60_000)
       if (dup) return no(`这条评论 ${Math.round(L.perThreadMin / 60)} 小时内已经回过一次了（${hhmmss(dup.at)}）—— 换一条`)
+    }
+    // 2026-11-10：perThread 只保证「同一条评论 24h 一条」，但同一视频下连续回不同的人，
+    // 外观上仍然是刷屏（风控视角）。这里补一层「同视频回复密度」上限，跨 reply/ta 合并计数。
+    if (bvid && L.replyPerVideoMax > 0) {
+      const t = `BV:${bvid}`
+      const since = now - L.replyPerVideoWindowMin * 60_000
+      const n = auto.filter((x) => x.reply && !x.mine && String(x.target ?? '') === t
+        && new Date(x.at).getTime() >= since).length
+      if (n >= L.replyPerVideoMax) {
+        return no(`这个视频 ${L.replyPerVideoWindowMin} 分钟内已经回过 ${n} 条了（上限 ${L.replyPerVideoMax}）—— 同视频连回看着像刷屏，换一个视频`)
+      }
     }
     return {
       ok: true, used, cap,
