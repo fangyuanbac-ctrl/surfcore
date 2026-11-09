@@ -274,6 +274,27 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       try { return fs.statSync(ledgerFile('whale-diary.md')).mtime.toLocaleDateString('sv-SE'); } catch { return new Date().toLocaleDateString('sv-SE'); }
     })();
 
+    // 2026-11-09（主人要求）：**只**把「和主人有关」的 B站 私信摘要同步到 QQ 侧。
+    // 来源是 B站 私人日记里的小节（她按 dm 流程自己写的摘要），**不读 dm-*.json 原文**；
+    // 其他人的私信仍然一律不进记忆（PRIVATE_RE 继续拦）。
+    const ownerDm = (() => {
+      let raw = '';
+      try { raw = fs.readFileSync(ledgerFile('whale-diary-private.md'), 'utf8'); } catch { return []; }
+      const dateMatch = /私人日记\s*[·•]\s*(\d{4}-\d{2}-\d{2})/.exec(raw);
+      const date = dateMatch ? dateMatch[1] : new Date().toLocaleDateString('sv-SE');
+      const m = /^##[^\n]*主人[^\n]*\n([\s\S]*?)(?=^##\s|^#\s|(?![\s\S]))/m.exec(raw);
+      if (!m) return [];
+      const ownerName = String(config?.owner?.name ?? '').trim();
+      const lines = m[1]
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^[\s>*\-•·]+/, '').trim())
+        .filter((line) => line && !/^\|/.test(line) && !/^---+$/.test(line))
+        .map((line) => redactOwner(redactOwnerName(line, ownerName)).replace(/\*\*/g, '').slice(0, 260))
+        .filter((line) => line.length >= 4)
+        .slice(0, 8);
+      return lines.length ? [{ date, lines }] : [];
+    })();
+
     const scoresRaw = readJson(ledgerFile('scores.json'), {}) ?? {};
     const favoritesRaw = readJson(ledgerFile('favorites.json'), {}) ?? {};
     const quotaRaw = readJson(ledgerFile('quota.json'), {}) ?? {};
@@ -368,6 +389,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       dynamicItems,
       anecdotes,
       thoughts,
+      ownerDm,
       titles: loadTitles().items ?? {},
     };
   }
@@ -493,7 +515,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     return BLOCKED_RE.test(String(text ?? ''));
   }
 
-  function buildDoc(entries) {
+  function buildDoc(entries, ownerDm = []) {
     const config = cfg();
     const self = config?.self ?? {};
     const persona = config?.persona ?? {};
@@ -504,7 +526,8 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     lines.push('');
     lines.push(`> 自动同步：${now}`);
     lines.push('> 来源：公开视频打分、公开评论、公开收藏、自己的公开动态、日记里的公开看片见闻。');
-    lines.push('> **私信内容一律不进入本文件**（生成器不读 dm-*.json，日记里转述私信的段落整段丢弃）。');
+    lines.push('> 私信默认不进入本文件（不读 dm-*.json，日记里转述私信的段落整段丢弃）。');
+    lines.push('> **例外（主人要求）：只同步「和主人那边」的私信摘要**，来自 B站 私人日记的「主人那边」小节。');
     lines.push('');
     lines.push('## 一、我是谁（B 站侧）');
     lines.push('');
@@ -542,7 +565,15 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       used += 1;
     }
     lines.push('');
-    lines.push('## 三、我自己的话（只保留不涉及私信的反思）');
+    if (ownerDm.length) {
+      lines.push('## 三、和主人在 B 站的私信（摘要）');
+      lines.push('');
+      for (const d of ownerDm) {
+        for (const line of d.lines) lines.push(`- ${d.date} ${line}`);
+      }
+      lines.push('');
+    }
+    lines.push('## 四、我自己的话（只保留不涉及私信的反思）');
     lines.push('');
     const thoughts = entries.filter((e) => e.type === 'thought').slice(0, 30);
     if (!thoughts.length) lines.push('- （暂时没有可摘出的公开反思）');
@@ -552,7 +583,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
     return doc.length > 28000 ? `${doc.slice(0, 28000)}\n\n（后略：记忆过长，完整内容见 state/bili-memory.json）` : doc;
   }
 
-  function buildBrief(entries) {
+  function buildBrief(entries, ownerDm = []) {
     const config = cfg();
     const self = config?.self ?? {};
     const persona = config?.persona ?? {};
@@ -593,35 +624,98 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
       lines.push(`- ${e.date}【${label}】${short(e.title, 46)}${body ? `：${body}` : ''}`);
     }
     lines.push('');
+    if (ownerDm.length) {
+      lines.push('最近和主人在 B 站私信（摘要；只有和主人的私信会同步到这里）：');
+      for (const d of ownerDm.slice(-2)) {
+        for (const line of d.lines.slice(0, 3)) lines.push(`- ${d.date}：${short(line, 140)}`);
+      }
+      lines.push('');
+    }
+    // 2026-11-10（主人要求）：把 B站 私人日记里「我自己的想法」也带到 QQ 侧提示词。
+    // 记忆卡里也有这些记录（bili-memory.json → 记忆卡摄取），但记忆卡的「最近记得的」名额
+    // 常被 QQ 聊天记录占满，这里再给一段短的，保证她 QQ 侧真能想起自己的心事。
+    const myThoughts = privateDiaryThoughts().slice(0, 3);
+    if (myThoughts.length) {
+      lines.push('最近我自己在想（私下里，不用每条都说）：');
+      for (const t of myThoughts) lines.push(`- ${short(t.text, 120)}`);
+      lines.push('');
+    }
     lines.push('我的习惯：看到认真做但没人看的小 UP 会去留一句；评论常用「mer」收尾；喜欢短、可爱、荒诞、有梗的东西，不爱长篇干货和带货。');
-    lines.push('边界：B 站私信里的内容不在我的记忆里，我也不会编；群友问起就按记得的公开经历回答。');
+    lines.push('边界：B 站其他人的私信不在我的记忆里；只有和主人的私信摘要会同步到这里（主人要求）——别编其他人的私信。');
     let brief = lines.join('\n');
     if (brief.length > 2700) brief = `${brief.slice(0, 2700)}…`;
     return brief;
   }
 
+  // 短文本指纹：给「私人日记里的想法」生成稳定 id（记忆卡按 sourceId 去重，重复摄入不会加两条）。
+  function textHash(text) {
+    let h = 0;
+    for (const ch of String(text ?? '')) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return h.toString(36);
+  }
+
+  /**
+   * B站 私人日记里「我自己的想法」（2026-11-10 主人要求）：
+   * 只取反思/偏好校准/下次想试这类段落，排除「主人那边」（私信，另有 ownerDm 通道）、额度流水和给他的信。
+   * 这些会随 bili-memory.json 一起被插件的记忆卡摄取，所以她 QQ 侧会有自己的"心事"，而不只是流水账。
+   */
+  function privateDiaryThoughts() {
+    let raw = '';
+    try { raw = fs.readFileSync(ledgerFile('whale-diary-private.md'), 'utf8'); } catch { return []; }
+    const dateMatch = /私人日记\s*[·•]\s*(\d{4}-\d{2}-\d{2})/.exec(raw);
+    const fallback = dateMatch ? dateMatch[1] : new Date().toLocaleDateString('sv-SE');
+    const ownerName = String(cfg()?.owner?.name ?? '').trim();
+    const out = [];
+    for (const b of parseDiaryBlocks(raw, fallback)) {
+      const heading = String(b.heading ?? '');
+      if (/主人|额度|节奏|给他的信|启动测试/.test(heading)) continue;
+      const text = cleanText(b.text);
+      if (!text) continue;
+      for (const line of text.split(/\r?\n+/)) {
+        const src = line.replace(/^[\s>*\-•·]+/, '').trim();
+        if (src.length < 12 || src.length > 300) continue;
+        // 跳过日记文件开头的自述行和标题残留，其余 bullet 就是「她自己的想法」。
+        if (/只给自己看|写偏好校准|^#/.test(src)) continue;
+        const cleaned = redactOwner(redactOwnerName(src, ownerName)).replace(/\*\*/g, '').trim();
+        if (cleaned.length < 12) continue;
+        out.push({ date: b.date || fallback, text: cleaned.slice(0, 240) });
+        if (out.length >= 12) break;
+      }
+      if (out.length >= 12) break;
+    }
+    return out;
+  }
+
   function buildIndex(entries) {
-    return {
-      generatedAt: new Date().toISOString(),
-      entries: entries.slice(0, 260).map((e) => ({
-        id: e.id,
-        type: e.type,
-        title: e.title,
-        bvid: e.bvid,
-        url: e.url,
-        pic: e.pic || '',
-        text: short(e.text, 600),
-        quote: short(e.quote, 260),
-        reason: short(e.reason, 300),
-        anecdote: short(e.anecdote, 400),
-        score: e.score,
-        favorite: e.favorite,
-        date: e.date,
-        at: e.at,
-        priority: e.priority,
-        shareable: e.shareable && !isBlocked(`${e.title} ${e.text} ${e.quote}`),
-      })),
-    };
+    const base = entries.slice(0, 260).map((e) => ({
+      id: e.id,
+      type: e.type,
+      title: e.title,
+      bvid: e.bvid,
+      url: e.url,
+      pic: e.pic || '',
+      text: short(e.text, 600),
+      quote: short(e.quote, 260),
+      reason: short(e.reason, 300),
+      anecdote: short(e.anecdote, 400),
+      score: e.score,
+      favorite: e.favorite,
+      date: e.date,
+      at: e.at,
+      priority: e.priority,
+      shareable: e.shareable && !isBlocked(`${e.title} ${e.text} ${e.quote}`),
+    }));
+    const thoughts = privateDiaryThoughts().map((t) => ({
+      id: `privthought:${t.date}:${textHash(t.text)}`,
+      type: 'thought',
+      title: short(t.text, 40),
+      text: t.text,
+      date: t.date,
+      at: `${t.date}T23:00:00+08:00`,
+      priority: 3,
+      shareable: false,
+    }));
+    return { generatedAt: new Date().toISOString(), entries: [...base, ...thoughts] };
   }
 
   function readBrief() {
@@ -671,8 +765,8 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
           if (e.bvid && titles[e.bvid]?.pic) e.pic = titles[e.bvid].pic;
           if (isBlocked(`${e.title} ${e.text} ${e.quote}`)) e.shareable = false;
         }
-        const doc = buildDoc(cards);
-        const brief = buildBrief(cards);
+        const doc = buildDoc(cards, data.ownerDm || []);
+        const brief = buildBrief(cards, data.ownerDm || []);
         const index = buildIndex(cards);
         atomicWriteText(paths.doc, doc + '\n');
         atomicWriteText(paths.brief, brief + '\n');
@@ -687,6 +781,7 @@ export function createBiliMemory({ stateDir, home = os.homedir(), biliDir = null
           shareable: cards.filter((e) => e.shareable).length,
           briefChars: brief.length,
           docChars: doc.length,
+          ownerDm: (data.ownerDm || []).reduce((n, d) => n + d.lines.length, 0),
           dynamics: data.dynamicItems.length,
           comments: data.commentItems.length,
           scores: data.scoreItems.length,
