@@ -364,7 +364,7 @@ function wakePrompt(st, tools = '') {
     `     ⚠️ **鱼群泛滥时默认强制聚拢**（当前设置：${B.fishGuard?.forceGather === false ? '关；要强制就加 --force-gather' : '开'}）：就算没有“回复少/新鲜/没回过”的鱼楼，也强行挑一条鱼楼回；`,
     '        **不许拿“没有可聚拢鱼楼”当理由不发**。设置页「鱼群保护 → 每次醒来强制聚拢」默认开；仍占主动评论额度 ✓',
     '     ⚠️ **不带 --share 才是普通评论**；带 --share 才是"分享给我"（那条才要评分 + rank 1 + @ 我 ✓）',
-    '     ⚠️ 分寸：**代码硬上限** 一天 ' + capText(L.daily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一 UP ' + L.perUpMin + ' 分钟 1 条 · 同一视频 ' + L.perVideoMin + ' 分钟 1 条',
+    '     ⚠️ 分寸：**代码硬上限** 一天 ' + capText(L.daily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一 UP ' + L.perUpMin + ' 分钟 1 条 · 同一视频 ' + L.perVideoMin + ' 分钟 1 条（这三条只管顶层评论；回复/搭话另算）',
     '        （额度/冷却满了就停，别硬刷；这不是“强制”能绕过的 ✓）',
     // 2026-10-20（用户定）：**热评也能搭话** —— 挂在别人评论下面的楼中楼，不是顶层 ✓
     '4.8) ⭐ **搭话**：`debrief` 的热评里，有人说到你心坎里 / 有明显错漏 / 想接个梗 → 回他一句：',
@@ -372,6 +372,7 @@ function wakePrompt(st, tools = '') {
     '     ⚠️ **必须带 `--ta`** —— 那是"我去搭别人"的账（' + capText(L.taDaily) + ' 条/天）；不带 `--ta` 的楼中楼算"回找我的人"（另一本账）✗',
     '     ⚠️ 这是**楼中楼**（挂在对方那条评论下面），rpid 就是 debrief 里那个 rpid（root 和 parent 填同一个）',
     '     ⚠️ 硬上限：一天 ' + capText(L.taDaily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一条评论 ' + Math.round(L.perThreadMin / 60) + ' 小时只回一次（撞上就被拒 ✗）',
+    '     ⚠️ **同一视频 ' + L.replyPerVideoWindowMin + ' 分钟内最多回 ' + L.replyPerVideoMax + ' 条**（回复和搭话合并算）—— 超了换一个视频，别在一个视频底下连着回，看着像刷屏 ✗',
     // 2026-10-21（用户定）：**每天要把搭话额度用完**，每发一条都会私信报备给你 ✓
     `     ⭐ **今天的搭话额度要花完**：已搭 ${taToday()}/${capText(L.taDaily)} 条，还差 ${Math.max(0, L.taDaily - taToday())} 条 —— 这一轮至少搭 2~3 条，别只搭一条就收工 ✓`,
     '     （每搭一条，脚本会自动给你发一条带【主动搭话】tag 的私信报备 ✓）',
@@ -1037,6 +1038,7 @@ export function startScheduler(ctx, opts) {
               `   · 对方是**其他人** → **也直接回** ✓（一样带 --auto 过闸，额度「回找我的人」${limits.replyDaily} 条/天）`,
               '     `comment --oid … --root … --parent … --message "…" --auto --once-per-person（仅当开关=开 ✓） --dry` → `--go` → `thread` 复核 ✓',
               '     ⚠️ 别带 --ta —— 那是"我去搭热评"，两本账分开记 ✗',
+              `     ⚠️ 同一视频 ${limits.replyPerVideoWindowMin} 分钟内最多回 ${limits.replyPerVideoMax} 条（回复和搭话合并算）—— 超了换一个视频，别在同一个视频底下连着回 ✗`,
               `   · 如果那条评论在**我自己发的动态**底下 → 带 \`--type 17\`（新版转发动态）或 \`--type 11\`（图文）；工具会按 oid 自动记进「动态回复」账：每类 ${limits.mineDaily} 条/天 · 每人 ${limits.minePerPerson} 条 ✓`,
               '     ⚠️ oid 必须用 comment-digest 打印的坐标（19 位动态 id 不能手抄：JS 数字会丢末几位）',
               '4) 吵架 / 要隐私 / 要你代表主人承诺 → 一条都不回 ✗（直接不理，别解释）',
