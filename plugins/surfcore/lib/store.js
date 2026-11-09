@@ -539,7 +539,11 @@ export function normalizeBiliConfig(input) {
   // 四本账额度：越界值收敛回 [min,max]；不认识的键丢弃（只认 LIMIT_RULES 里的九个）。
   cfg.limits = normalizeLimits(cfg.limits);
   // 四类动态：只保留可编辑字段（enabled/slot/minLen/maxLen/prefix），其他键丢掉。
+  // 2026-11-09：`via` 是新增的「去向」开关（dynamic=公开发动态 / dm=只私信主人）。
+  //   它必须跟着 UI 保存一起活下来，否则用户在设置页改任意 B站 字段都会把它洗回 dynamic。
+  const dynamicsVia = String(input?.dynamics?.via ?? 'dynamic') === 'dm' ? 'dm' : 'dynamic';
   cfg.dynamics = normalizeDynamics(cfg.dynamics);
+  cfg.dynamics.via = dynamicsVia;
   cfg.share = isPlainObject(cfg.share) ? cfg.share : {};
   // 2026-10-23 用户定：默认发自己的动态（视频卡片），不再默认去评论区 @ 主人。
   cfg.share.via = ['dynamic', 'comment', 'dm'].includes(cfg.share.via) ? cfg.share.via : 'dynamic';

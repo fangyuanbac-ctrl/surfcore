@@ -377,23 +377,34 @@ function wakePrompt(st, tools = '') {
     '     （每搭一条，脚本会自动给你发一条带【主动搭话】tag 的私信报备 ✓）',
     '     ⚠️ 别逐条盖楼、别跟人抬杠 —— 一句话说完就走 ✓',
     // 2026-10-21（用户定）：**每天一条动态** —— 写当天评分最高的那条
-    '4.9) ⭐ **记分**：深读过的每条都记一下 `score <BV> --score N --reason "…"`（0~20 分，没到 13 也记 ✓）',
-    '     —— 今天的动态要从这里面挑"最高分那条"，不记分就发不出去 ✗',
-    `4.95) ⭐ **今天的一类动态（best）**：四类各一条，best 在 ${bestSlot} 起；其余三类等 dynTick 提醒（设置页关掉的类会跳过）`,
-    '     `daily --kind best --text "…" --dry` → `--go`',
-    '     ⚠️ 必须写**今天评分最高**的那条视频（工具会核对，给错直接拒 ✗）',
-    `     ⚠️ 正文 **${K.best.minLen}~${K.best.maxLen} 字**，用你（当前人格卡）的口吻说这条视频 —— 吐槽、安利、讲自己想起什么都行，随意发挥 ✓`,
-    '     ⚠️⚠️ **这是公开发给所有人的动态**（推给关注你的人），不是私信、不是只给主人看的便条：',
-    '        用"给大家推一条…""安利一下…"这种口吻；**不要 @ 主人、正文里也别 @ 任何人** ✗（工具会拒）',
-    '     ⚠️ 配图自动挑：`~/.dsh/surfcore/bili/memes/` 里的表情包（随机）→ 没有就用这条视频的封面 ✓',
-    '     ⚠️ 今天发过就再也发不了（跨天才重置）✗ 别反复试',
-    // 2026-10-21（用户定）：第二条动态 —— 六款游戏的 AI 二创，按顺序轮换
-    '4.97) ⭐ **第二条动态：游戏 AI 二创**（每天一条，和上面那条互不占；设置页关掉就跳过）：',
-    '     `gamefeed` 看今天轮到哪款游戏 + 候选（原神→鸣潮→绝区零→星铁→终末地→异环，脚本自动轮换）',
-    '     → 挑 2~3 条 `debrief` 认真看质量（**别只看播放**）→ 挑一条真的做得好的',
-    `     → \`daily --kind game --bvid <BV> --text "…" --dry\` → \`--go\`（正文 **${K.game.minLen}~${K.game.maxLen} 字**，要仔细评价）`,
-    '     ⚠️ 工具会核对：必须是轮到的那个游戏 · 近 21 天 · 播放 ≥2000 · 赞/播 ≥2% · 标题/简介有 AI 二创信号',
-    '     ⚠️ 也是**公开发给所有人**的，别 @ 人；挑不出来就在日记里写"今天没有值得推的"，别硬凑 ✗',
+    // 2026-11-09（主人改口）：看过的视频「总结」改成**只私信主人**，不发公开动态。
+    //   开关在 bili.config.json 的 dynamics.via：'dm' = 私信主人；缺省/other = 保留原来的公开动态流程。
+    ...(String(B.dynamics?.via ?? 'dynamic') === 'dm' ? [
+      '4.9) ⭐ **记分**：深读过的每条都记一下 `score <BV> --score N --reason "…"`（0~20 分，没到 13 也记 ✓）',
+      '4.95) ⭐ **看片总结 → 只私信主人**（主人定的规矩：不发公开动态 ✗、不发评论/弹幕、不用 daily / share-dynamic）：',
+      '     今天深读过的视频里挑一条最想说的（best 就用今天评分最高的那条），写 50~200 字总结（你的口吻：吐槽/安利/想起什么）',
+      '     → `dm --msg "<总结> 视频：https://www.bilibili.com/video/<BV>/ " --go`（收信人写死是主人，不会发错人）',
+      '     ⚠️ 一天最多 4 条总结（早/午/晚/游戏各一条就够），同一类只发一次，别刷屏 ✗',
+      '     ⚠️ 挑不出来就不发（日记里写"今天没有值得说的"），别硬凑 ✗',
+    ] : [
+      '4.9) ⭐ **记分**：深读过的每条都记一下 `score <BV> --score N --reason "…"`（0~20 分，没到 13 也记 ✓）',
+      '     —— 今天的动态要从这里面挑"最高分那条"，不记分就发不出去 ✗',
+      `4.95) ⭐ **今天的一类动态（best）**：四类各一条，best 在 ${bestSlot} 起；其余三类等 dynTick 提醒（设置页关掉的类会跳过）`,
+      '     `daily --kind best --text "…" --dry` → `--go`',
+      '     ⚠️ 必须写**今天评分最高**的那条视频（工具会核对，给错直接拒 ✗）',
+      `     ⚠️ 正文 **${K.best.minLen}~${K.best.maxLen} 字**，用你（当前人格卡）的口吻说这条视频 —— 吐槽、安利、讲自己想起什么都行，随意发挥 ✓`,
+      '     ⚠️⚠️ **这是公开发给所有人的动态**（推给关注你的人），不是私信、不是只给主人看的便条：',
+      '        用"给大家推一条…""安利一下…"这种口吻；**不要 @ 主人、正文里也别 @ 任何人** ✗（工具会拒）',
+      '     ⚠️ 配图自动挑：`~/.dsh/surfcore/bili/memes/` 里的表情包（随机）→ 没有就用这条视频的封面 ✓',
+      '     ⚠️ 今天发过就再也发不了（跨天才重置）✗ 别反复试',
+      // 2026-10-21（用户定）：第二条动态 —— 六款游戏的 AI 二创，按顺序轮换
+      '4.97) ⭐ **第二条动态：游戏 AI 二创**（每天一条，和上面那条互不占；设置页关掉就跳过）：',
+      '     `gamefeed` 看今天轮到哪款游戏 + 候选（原神→鸣潮→绝区零→星铁→终末地→异环，脚本自动轮换）',
+      '     → 挑 2~3 条 `debrief` 认真看质量（**别只看播放**）→ 挑一条真的做得好的',
+      `     → \`daily --kind game --bvid <BV> --text "…" --dry\` → \`--go\`（正文 **${K.game.minLen}~${K.game.maxLen} 字**，要仔细评价）`,
+      '     ⚠️ 工具会核对：必须是轮到的那个游戏 · 近 21 天 · 播放 ≥2000 · 赞/播 ≥2% · 标题/简介有 AI 二创信号',
+      '     ⚠️ 也是**公开发给所有人**的，别 @ 人；挑不出来就在日记里写"今天没有值得推的"，别硬凑 ✗',
+    ]),
     // 2026-10-21（用户定）：**全局回复规则** —— 疑似被攻击/阴阳怪气一律不接，记账等审
     '4.99) ⭐⭐ **遇到攻击 / 阴阳怪气 → 一个字都别回，记待审**：',
     '     怀疑对面在骂你、嘲讽你、阴阳你（"就这?""AI 也来凑热闹""你懂什么""呵呵"…）→ **不回** ✗',
@@ -1176,6 +1187,8 @@ export function startScheduler(ctx, opts) {
     if (await budgetBlockedNow('动态提醒')) return
     const cfgNow = config()
     const KINDS_NOW = kindsNow(cfgNow)
+    // 2026-11-09：dynamics.via='dm' → 四类动态改成「看片总结私信主人」，不发公开动态
+    const VIA_DM = String(cfgNow?.dynamics?.via ?? 'dynamic') === 'dm'
     const gapMs = Math.max(5, dynamicsGapMin(cfgNow)) * 60_000
     const L = limitsNow()
     const now = new Date()
@@ -1185,6 +1198,8 @@ export function startScheduler(ctx, opts) {
     try { ns = JSON.parse(fs.readFileSync(NUDGE, 'utf8')) } catch {}
     let dstate = {}
     try { dstate = JSON.parse(fs.readFileSync(path.join(PLATFORM_DIR, 'daily-dynamic.json'), 'utf8')) } catch {}
+    let dmState = {}
+    try { dmState = JSON.parse(fs.readFileSync(path.join(PLATFORM_DIR, 'daily-dm.json'), 'utf8')) } catch {}
     // 最近一次真发出去的动态（用来保证补发之间有 30 分钟）
     const lastPost = Object.values(dstate ?? {})
       .map((s) => new Date(s?.at ?? 0).getTime())
@@ -1264,10 +1279,11 @@ export function startScheduler(ctx, opts) {
       }
     }
 
-    if (!dynamicsEnabled(cfgNow)) return
+    if (!dynamicsEnabled(cfgNow) && !VIA_DM) return
     for (const [kind, k] of Object.entries(KINDS_NOW)) {
       if (k.enabled === false) continue                     // 设置页关掉这一类
       if (dstate?.[kind]?.date === today()) continue      // 今天已发
+      if (VIA_DM && dmState?.[kind]?.date === today()) continue   // 今天已经私信过这一类
       if (h < Number(k.slot)) continue                    // 还没到点
       // 2026-10-21 用户定：**过了本类时段只有上线日才补**，明天起照常（错过就等明天）
       const inSlotNow = slotOf(kind, now, KINDS_NOW)
@@ -1277,6 +1293,11 @@ export function startScheduler(ctx, opts) {
       if (lastNudge && Date.now() - lastNudge < gapMs) continue
       ns[key] = new Date().toISOString()
       try { fs.writeFileSync(NUDGE, JSON.stringify(ns, null, 2)) } catch {}
+      // DM 模式：这一类今天提醒过就记下来（私信不走 daily-dynamic.json，避免 30 分钟后又吵一次）
+      if (VIA_DM) {
+        dmState = { ...dmState, [kind]: { date: today(), at: new Date().toISOString() } }
+        try { fs.writeFileSync(path.join(PLATFORM_DIR, 'daily-dm.json'), JSON.stringify(dmState, null, 2)) } catch {}
+      }
 
       // 还在本类时段里 → 正常提醒；已经过了（只有上线日）→ 补发口吻（必须带 --catchup）
       const inSlot = inSlotNow
@@ -1290,6 +1311,21 @@ export function startScheduler(ctx, opts) {
             type: 'text',
             text: [
               ...identityContextLines(),
+              ...(VIA_DM ? [
+                `【该给主人发总结了】${String(k.slot).padStart(2, '0')}:00 —— 今天「${k.n} 类 · ${k.label}」的看片总结，发 B站 私信给主人就好（不发公开动态 ✗）。`,
+                '',
+                '按新规矩做（不要等我说话，直接做）：',
+                ...(pinOf(kind) ? [`0) ⭐ 今天这条**主人已经拍板**：${pinOf(kind)}（别再自己挑了，直接用这个 ✓）`] : []),
+                ...(noteOf(kind) ? [`0.5) ⭐ **主人给的要点，必须写进总结**：${noteOf(kind)}`] : []),
+                kind === 'best'
+                  ? '1) `score --best` 看今天最高分那条；还没记分就先 `score <BV> --score N` 记上'
+                  : `1) \`gamefeed${kind === 'game' ? '' : ' --for ' + kind}\` 看候选 → 挑 2~3 条 debrief，选一条真的做得好的`,
+                `2) 写总结（${k.minLen}~${k.maxLen} 字，用你的口吻评价，别只说"好看"）`,
+                '3) `dm --msg "<总结> 视频：https://www.bilibili.com/video/<BV>/ " --go` —— **只私信主人**，不发动态、不用 --share ✗',
+                '⚠️ 公开动态已被主人关掉（`daily` / `share-dynamic` 会被工具拒，别去试 ✗）',
+                '⚠️ 挑不出来就不发（日记里写"今天没有值得说的"），别硬凑 ✓',
+                toolLine(),
+              ] : [
               inSlot
                 ? `【该发动态了】${String(k.slot).padStart(2, '0')}:00 —— 今天「${k.n} 类 · ${k.label}」那条还没发。`
                 : `【补发】今天「${k.n} 类 · ${k.label}」（本该 ${String(k.slot).padStart(2, '0')}:00）错过了 —— 现在补上。`,
@@ -1313,6 +1349,7 @@ export function startScheduler(ctx, opts) {
                 : `⚠️ 补发一次只补一类，下一条要等 30 分钟（脚本会拦）✗`,
               '⚠️ 公开发给所有人，正文别 @ 人；挑不出来就在日记里写"今天没有值得推的" ✓',
               toolLine(),
+              ]),
             ].join('\n'),
           }],
         }, new AbortController().signal)
