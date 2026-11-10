@@ -309,7 +309,7 @@ export function buildQqAlignmentBrief({ groupIds = [], maxEntries = 200, links: 
   step += 1;
   lines.push(`${step}. 对齐信息来自管理员登记/本人自述；如果认错或信息过期，以对方当场说的为准，并提示管理员更新对齐表。`);
   step += 1;
-  lines.push(`${step}. 对齐不等于可以搬运内容：私信、私聊、密码、地址、联系方式等仍然一律不能跨平台。`);
+  lines.push(`${step}. 对齐不等于可以搬运原文：私信/私聊的**原话**、密码、地址、联系方式仍然不能跨平台公开复述；但**你自己知道的近况可以自然带出来，不用装失忆**（可以说「你上次提的那件事」）。`);
   return lines.join('\n');
 }
 
@@ -355,7 +355,7 @@ export function buildBiliAlignmentBrief({ maxEntries = 200, links: providedLinks
   }
   lines.push(`${step}. 在 B 站认出他们时可以自然打招呼；但**不要**在公开评论/动态/直播间写出对方的 QQ 号、群号或群昵称。`);
   step += 1;
-  lines.push(`${step}. 不要用 QQ 群里的私聊内容、私信内容去 B 站搭话；也不要问对方“你是不是群里的谁”来验证身份。`);
+  lines.push(`${step}. 不要拿 QQ 私聊的**原话**去 B 站公开搭话或复述；也不要问对方“你是不是群里的谁”来验证身份。你自己的近况可以自然接住，别装没聊过。`);
   step += 1;
   lines.push(`${step}. 对齐只用于认人，不改变 B 站这边的分享/评论额度与边界。`);
   return lines.join('\n');
@@ -387,7 +387,7 @@ export function stats() {
     byPlatform: {
       qq: state.links.filter((l) => l.identities.qq).length,
       bili: state.links.filter((l) => l.identities.bili).length,
-      tieba: state.links.filter((l) => l.identities.tieba).length,
+      tieba: state.links.filter((l) => l.identities.tieba).length,
     },
     updatedAt: state.updatedAt,
   };
