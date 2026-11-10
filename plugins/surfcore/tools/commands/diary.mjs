@@ -13,6 +13,7 @@
 // 关键约定（写进 AGENTS.md）：**自主发言之后必须主动通知主人**（notify_wechat），
 // 因为"她自己决定的对外动作"必须让主人事后可见 —— 这是 B 档能成立的前提。
 import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { appendSelfNote } from '../../../../src/shared-memory.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
@@ -37,6 +38,8 @@ if (cmd === 'log') {
   const kind = opt._a ?? 'event'
   fs.mkdirSync(path.dirname(LOG), { recursive: true })
   fs.appendFileSync(LOG, JSON.stringify({ at: new Date().toISOString(), kind, target: opt.target ?? null, note: opt.note ?? null }) + '\n')
+  // 2026-11-11：B站 这边的心情/事件也进跨平台"自我层"，QQ 的她才知道 B站 的生活
+  try { if (opt.note) appendSelfNote({ platform: 'bili', text: String(opt.note) }) } catch {}
   console.log(`已记：${kind}${opt.target ? ' → ' + opt.target : ''}`)
   process.exit(0)
 }

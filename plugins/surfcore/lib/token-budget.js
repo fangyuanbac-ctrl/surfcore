@@ -130,6 +130,11 @@ export function createTokenBudgetService({
 } = {}) {
   const dir = path.join(dshHome, 'surfcore');
   const stateFile = path.join(dir, BUDGET_FILES.state);
+  // 2026-11-11：工程/本机会话的独立账本（不进 SurfCore 三类预算，只为了看得见"优化花了多少"）
+  const devFile = path.join(dir, 'token-usage-dev-daily.json');
+  const dev = { day: null, cost: 0, tokens: 0, sessions: {} };
+  const devSamples = new Map();
+  let devTimer = null;
   const dailyFile = path.join(dir, BUDGET_FILES.daily);
   const budgetFile = path.join(dir, BUDGET_FILES.budget);
   const slangFile = path.join(qqStateDir, 'slang-session.json');
@@ -201,6 +206,8 @@ export function createTokenBudgetService({
     if (preset.startsWith('qq-chat') && /黑话/.test(title)) return 'other';
     if (preset.startsWith('qq-chat')) return 'qq';
     if (readQqSessionIds().has(id)) return 'qq';
+    // 2026-11-11：工程/本机会话不进 SurfCore 三类预算（保持原契约），
+    // 改由下面的 dev 账本单独记（token-usage-dev-daily.json），让"优化烧了多少"可见。
     return null;
   }
 
@@ -275,6 +282,67 @@ export function createTokenBudgetService({
     bucket.tokens = Math.round(clamp0(bucket.tokens + num(tokens)));
     bucket.cost = clamp0(bucket.cost + num(cost));
     state.categories[category] = bucket;
+  }
+
+  // ── 工程/本机会话账本（独立文件，不影响三类额度）────────────────────────────
+  function ensureDevDay(atMs = now()) {
+    const day = localDayKey(atMs);
+    if (dev.day === day) return;
+    dev.day = day;
+    dev.cost = 0;
+    dev.tokens = 0;
+    dev.sessions = {};
+    devSamples.clear();
+  }
+
+  function writeDev() {
+    devTimer = null;
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const sessions = {};
+      for (const [id, s] of Object.entries(dev.sessions)) {
+        sessions[id] = { tokens: Math.round(s.tokens), cost: Math.round(s.cost * 100000) / 100000, preset: s.preset || '' };
+      }
+      fs.writeFileSync(devFile, `${JSON.stringify({ day: dev.day, at: now(), cost: Math.round(dev.cost * 100000) / 100000, tokens: Math.round(dev.tokens), sessions }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    } catch {}
+  }
+
+  function scheduleDevWrite() {
+    if (devTimer) return;
+    devTimer = setTimeout(writeDev, 1500);
+    devTimer.unref?.();
+  }
+
+  function recordDevUsage(session, event, usage, at) {
+    const id = String(session.id ?? '');
+    ensureDevDay(at);
+    const buckets = normalizeBuckets(usage);
+    const tokens = totalTokensOf(buckets);
+    if (!tokens) return;
+    const turn = Number(event.data?.turn);
+    const step = Number(event.data?.step);
+    if (!Number.isFinite(turn) || !Number.isFinite(step)) return;
+    const axis = retryAxis.get(id);
+    const retry = axis && axis.turn === turn && axis.step === step ? axis.retry : 0;
+    const key = `${id}|${turn}|${step}|${retry}`;
+    const model = event.data?.message?.source?.model ?? sessionModel.get(id) ?? defaultModel();
+    const p = priceUsage(buckets, { model, at, table: priceTable() });
+    const prev = devSamples.get(key);
+    const deltaTokens = tokens - (prev?.tokens ?? 0);
+    const deltaCost = p.cost.total - (prev?.cost ?? 0);
+    devSamples.set(key, { tokens, cost: p.cost.total });
+    dev.tokens = Math.max(0, dev.tokens + deltaTokens);
+    dev.cost = Math.max(0, dev.cost + deltaCost);
+    const s = dev.sessions[id] ?? { tokens: 0, cost: 0, preset: '' };
+    s.tokens += deltaTokens;
+    s.cost += deltaCost;
+    if (!s.preset) s.preset = String(session.header?.agentPreset ?? session.header?.config?.agentPreset ?? '');
+    dev.sessions[id] = s;
+    scheduleDevWrite();
+  }
+
+  function devSnapshot() {
+    return { day: dev.day, cost: Math.round(dev.cost * 100000) / 100000, tokens: Math.round(dev.tokens), sessions: { ...dev.sessions } };
   }
 
   // ── 启动回填 ────────────────────────────────────────────────────────────
@@ -491,7 +559,11 @@ export function createTokenBudgetService({
     if (!usage) return false;
     const header = session.header ?? {};
     const category = sessionCategory.get(id) ?? classify(header, sessionMeta.get(id) ?? {});
-    if (!category) return false;
+    if (!category) {
+      // 用户的普通 DSH 会话（工程/本机）：进独立账本，不进 SurfCore 三类预算
+      recordDevUsage(session, event, usage, at);
+      return false;
+    }
     rememberSession(id, category, {
       agentPreset: header.agentPreset,
       parentSession: header.parentSession,
@@ -762,6 +834,8 @@ export function createTokenBudgetService({
     stateFile,
     dailyFile,
     budgetFile,
+    devFile,
+    devSnapshot,
     bootstrap,
     ensureReady,
     ingestEvent,

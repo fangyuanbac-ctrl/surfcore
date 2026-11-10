@@ -233,7 +233,7 @@ export function normalizeUsage(usage) {
 
 /** 四个桶求和（token 总量）。 */
 export function totalTokensOf(buckets) {
-  return (buckets?.cacheMiss ?? 0) + (buckets?.cacheHit ?? 0) + (buckets?.cacheWrite ?? 0) + (buckets?.output ?? 0);
+  return (buckets?.cacheMiss ?? 0) + (buckets?.cacheHit ?? 0) + (buckets?.cacheWrite ?? 0) + (buckets?.output ?? 0) + (buckets?.reasoning ?? 0);
 }
 
 /**
@@ -247,7 +247,8 @@ export function costOfBuckets(buckets, rates) {
   const cacheHit = ((b.cacheHit ?? 0) / rates.unit) * rates.cacheHit;
   const cacheMiss = ((b.cacheMiss ?? 0) / rates.unit) * rates.cacheMiss;
   const cacheWrite = ((b.cacheWrite ?? 0) / rates.unit) * rates.cacheWrite;
-  const output = ((b.output ?? 0) / rates.unit) * rates.output;
+  // reasoning 按输出计价（DeepSeek 把思考 token 计在 completion 里）
+  const output = (((b.output ?? 0) + (b.reasoning ?? 0)) / rates.unit) * rates.output;
   return {
     cacheHit,
     cacheMiss,
