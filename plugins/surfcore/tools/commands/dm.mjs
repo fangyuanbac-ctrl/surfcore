@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
 import { gate, record } from '../lib/quota-gate.mjs'
+import { appendHotEvent } from '../../../../src/shared-memory.js'
 
 const argv = process.argv.slice(2)
 const opt = {}
@@ -241,6 +242,10 @@ if (r.code === 0) {
   //   （每次发主人私信后，陌生人的「24 小时 1 条」「一天 5 条」就被清零 → 形同虚设 ✗）
   //   改为保留已有字段，只更新主人通道自己的计数 ✓
   saveQ({ ...q, date: today(), count: used + 1, mid: ONLY_TO, at: new Date().toISOString() })
+  // 2026-11-11：她在 B站 回的话进跨平台热层（QQ 她下次醒来能看到"自己刚才说过什么"）
+  if (!SHARE) {
+    try { appendHotEvent({ platform: 'bili', who: 'self', text: MSG }) } catch {}
+  }
   if (SHARE) record({ type: 'dm', target: SHARE_TARGET, note: MSG.slice(0, 40), auto: true, share: true })
   console.log(`  ✓ 已发送（HTTP ${r.http}）${SHARE ? ' · 已记入分享额度 ✓' : ' · 推送不占额度 ✓'}`)
   process.exit(0)

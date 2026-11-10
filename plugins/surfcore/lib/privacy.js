@@ -2,7 +2,9 @@
  * 隐私闸门 —— 合体插件里唯一允许“跨平台搬运内容”的出口。
  *
  * 硬规则（不是可选项）：
- *   1. **私信永不进入跨平台记忆**。QQ 侧只读 group:* 会话；B 站侧生成器本身不读 dm-*。
+ *   1. **私信永不进入长期跨平台记忆**。QQ 侧只读 group:* 会话；B 站侧生成器本身不读 dm-*。
+ *      例外（2026-11-11 主人授权，策略 v4）：`src/shared-memory.js` 的**热层**可同步「主人和她本人」的
+ *      对话，仅 15 分钟 TTL、≤80 字/条、命中任何隐私正则就整条丢弃；第三方内容永不进入。
  *   2. 令牌、cookie、密码、私钥、验证码、银行卡、身份证、住址、手机号等
  *      一律不进入记忆文件；命中即整行丢弃或脱敏。
  *   3. 任何 QQ 号 / B 站 mid / 群号都不写进记忆正文（身份对齐是单独的白名单通道，
@@ -13,7 +15,7 @@
  */
 import path from 'node:path';
 
-export const PRIVACY_POLICY_VERSION = 3;
+export const PRIVACY_POLICY_VERSION = 4;
 
 const SEVERE_SECRET = [
   { kind: 'private-key', re: /-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/i, label: '私钥' },

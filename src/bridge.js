@@ -17,6 +17,7 @@ import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport,
 import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
+import { appendHotEvent, renderHotBlock, renderSelfBlock } from './shared-memory.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
 import { looksLikeUnfinished, selectWaitBatch } from './v2-wait.js';
@@ -9693,6 +9694,10 @@ async function main() {
           if (kind === 'private') await withTimeout(bot.sendPrivateMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           else await withTimeout(bot.sendGroupMessage(Number(id), text(escapeCqText(part))), SEND_TIMEOUT_MS, `QQ发送 ${kind}:${id}`);
           noteSendSuccess(key);
+          // 2026-11-11：她发到 QQ 的话也进热层（B站 她能看到"自己刚才说过什么"）
+          if (kind === 'private') {
+            try { appendHotEvent({ platform: 'qq', who: 'self', text: part }) } catch {}
+          }
           outbox.markSent(kind, id, part);
         })
         .catch((error) => {
@@ -14977,6 +14982,11 @@ async function main() {
     const antiAiLine = '【别像客服】可以装傻、拒绝、已读乱回；少用“绝对/保证/一绝”。\n\n';
     // 2026-11-11（主人要求）：让她有"自己的时钟"——知道现在几点，并且能自己定下一次醒来的时间。
     const clockLine = '【你有时钟】想晚点说就给自己定个闹钟：`qq_set_wake_config({mode:"diving", sleepMs:60000*N, note:"…"})`——到点叫醒你，发不发由你定。\n\n';
+    // 2026-11-11：跨平台共享记忆——另一边（B站）刚聊过什么、她自己的近况
+    const hotText = renderHotBlock({ platform: 'qq' });
+    const hotLine = hotText ? `${hotText}\n\n` : '';
+    const selfText = renderSelfBlock({ maxChars: 200 });
+    const selfLine = selfText ? `${selfText}\n\n` : '';
     const stickerCfg = cfg.socialV2?.sticker ?? {};
     const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
       ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 8)}\n\n`
@@ -15042,7 +15052,7 @@ async function main() {
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + hotLine + selfLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -16155,6 +16165,10 @@ async function main() {
     }
     if (!plainContent && !quoteTargetIsSelf) return;
     const isOwner = String(event.user_id) === String(cfg.ownerQQ ?? '');
+    // 2026-11-11：主人私聊进热层（B站 她醒来时能看到"刚才 QQ 聊了什么"）
+    if (kind === 'private' && isOwner && plainContent) {
+      try { appendHotEvent({ platform: 'qq', who: 'owner', text: plainContent }) } catch {}
+    }
     const displayName = kind === 'group'
       ? (event.sender?.card || event.sender?.nickname || String(event.user_id))
       : '私聊';

@@ -33,6 +33,7 @@ import {
 } from './paths.js'
 import { resolvePersonaFile } from './persona.js'
 import { makeEntry, addEntry, pendingEntries } from './share-queue.mjs'
+import { appendHotEvent, renderHotBlock, renderSelfBlock } from '../../../src/shared-memory.js'
 import { readUnified } from './store.js'
 import { memoryCardPromptBlock } from './memory-card.js'
 import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-identity.js'
@@ -187,8 +188,10 @@ function memoryCardBlockForBili() {
   return memoryCardPromptBlock('bili')
 }
 
-/** 每次唤醒都放在最前面的合体上下文（顺序：人设 → 自我锚点 → 管理员 → 对齐 → QQ 记忆 → 记忆卡）。 */
+/** 每次唤醒都放在最前面的合体上下文（顺序：人设 → 自我锚点 → 管理员 → 对齐 → QQ 记忆 → 记忆卡 → 跨平台热层）。 */
 function identityContextLines() {
+  const hot = renderHotBlock({ platform: 'bili' })
+  const self = renderSelfBlock({ maxChars: 200 })
   return [
     personaCardBlock(),
     selfIdentityBlockForBili(),
@@ -196,6 +199,8 @@ function identityContextLines() {
     alignmentBlockForBili(),
     qqMemoryBlockForBili(),
     memoryCardBlockForBili(),
+    hot,
+    self,
   ].filter(Boolean)
 }
 
@@ -1017,6 +1022,12 @@ export function startScheduler(ctx, opts) {
           ? (j.items ?? [])
           : [{ mid: j.mid, name: j.name, text: j.text, ts: j.ts }]
         if (!items.length) return
+        // 2026-11-11：主人的 B站 私信进跨平台热层（QQ 她下次醒来能看到"刚才在B站聊了什么"）
+        for (const it of items) {
+          if (String(it.mid) === ownerMid && it.text) {
+            try { appendHotEvent({ platform: 'bili', who: 'owner', text: it.text }) } catch {}
+          }
+        }
         // 2026-11-11（主人要求）：分享的视频「看了就行，不用急着回」；而且要比自己刷到的有区分度。
         // 做法：叫醒她认真看完（subtitles/debrief），排进 dm-share-pending.json；
         //      之后每次自然醒都只温和提醒一次（想回就回、不想回也行），回不回由她自己定。
