@@ -7,6 +7,7 @@
 //     node dm-await.mjs --baseline [--any]        把当前状态记为"已读"，从现在起只认新消息
 //     node dm-await.mjs --once [--json] [--any]   轮询一次（命中打印 DM_HIT / JSON）
 import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { parseDmContent } from '../lib/dm-content.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../lib/config.mjs'
@@ -41,9 +42,10 @@ const H = {
 }
 const loadState = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return {} } }
 const saveState = (o) => { fs.mkdirSync(path.dirname(STATE), { recursive: true }); fs.writeFileSync(STATE, JSON.stringify(o, null, 2) + '\n') }
+// 2026-11-11：分享卡（视频）以前拿不到 BV → 现在统一解析（见 lib/dm-content.mjs）。
+// 文本照旧，分享卡会补成「… 视频：https://www.bilibili.com/video/BV…/」，调度器据此让她先去 debrief。
 const parsed = (content) => {
-  // 私信内容可能是 {"content":"…"} 或纯文本
-  try { const j = JSON.parse(String(content)); return String(j.content ?? j.text ?? content) } catch { return String(content ?? '') }
+  try { return parseDmContent(content).text } catch { return String(content ?? '') }
 }
 
 async function fetchSessions() {

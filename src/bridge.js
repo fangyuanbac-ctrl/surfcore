@@ -1,4 +1,4 @@
-﻿// QQ ↔ DeepSeek Harness 桥接主程序。
+// QQ ↔ DeepSeek Harness 桥接主程序。
 //
 // 链路：
 //   QQ 消息 → SnowLuma (OneBot v11 WS) → 本进程 → DSH Web API session.prompt
@@ -105,6 +105,7 @@ import { createContextTelemetry } from './context-telemetry.js';
 import { createBiliDynamicsSync } from './bili-dynamics.js';
 import { createBiliShareScheduler } from './bili-share-scheduler.js';
 import { createBiliCardSender, normalizeCardMode } from './bili-card.js';
+import { extractCardText } from './qq-card.js';
 import { fetchVideoInfo } from './bili-api.js';
 import {
   loadSlang,
@@ -1716,7 +1717,9 @@ async function segmentsToText(segments, options = {}) {
         out.push(replyText || '[引用消息]');
         break;
       }
-      case 'json': out.push('[卡片消息]'); break;
+      // 2026-11-11：json 卡片不再一律 `[卡片消息]`——B站分享卡/小程序卡还原出标题和链接，
+      // 否则主人分享视频给她，她只看到「[卡片消息]」，等于没分享。
+      case 'json': out.push(extractCardText(d.data ?? d) ?? '[卡片消息]'); break;
       // markdown：SnowLuma 1.14.9 的线上段落是 `{type:'markdown',data:{content}}`。
       // 上游 1.14.17+（commit 1934e4e7「include text alongside received markdown」）
       // 起还会带上 `data.text`。两个形状都读，这样将来升级 SnowLuma 运行时不会退化成

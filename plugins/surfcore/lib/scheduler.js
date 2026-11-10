@@ -32,6 +32,7 @@ import {
   BILI_ALIGNMENT_FILE, BILI_CONFIG, QQ_STATE_DIR, findNodeExe,
 } from './paths.js'
 import { resolvePersonaFile } from './persona.js'
+import { makeEntry, addEntry, dueEntry, markDone, deferQuiet } from './share-queue.mjs'
 import { readUnified } from './store.js'
 import { memoryCardPromptBlock } from './memory-card.js'
 import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-identity.js'
@@ -925,6 +926,10 @@ export function startScheduler(ctx, opts) {
   const LSTATE = path.join(PLATFORM_DIR, LISTEN_STATE)
   const readL = () => { try { return JSON.parse(fs.readFileSync(LSTATE, 'utf8')) } catch { return null } }
   const writeL = (o) => { try { fs.mkdirSync(path.dirname(LSTATE), { recursive: true }); fs.writeFileSync(LSTATE, JSON.stringify(o, null, 2) + '\n') } catch {} }
+  // 2026-11-11：主人分享视频的「慢回」队列（看完先不回，20~40 分钟后再叫）
+  const SQF = path.join(PLATFORM_DIR, 'dm-share-pending.json')
+  const readSQ = () => { try { const a = JSON.parse(fs.readFileSync(SQF, 'utf8')); return Array.isArray(a) ? a : [] } catch { return [] } }
+  const writeSQ = (a) => { try { fs.mkdirSync(path.dirname(SQF), { recursive: true }); fs.writeFileSync(SQF, JSON.stringify(Array.isArray(a) ? a : [], null, 2) + '\n') } catch {} }
   const inWindow = (cfg) => {
     const wins = Array.isArray(cfg?.night?.windows) ? cfg.night.windows : []
     const d = new Date(); const m = d.getHours() * 60 + d.getMinutes()
@@ -984,13 +989,25 @@ export function startScheduler(ctx, opts) {
           ? (j.items ?? [])
           : [{ mid: j.mid, name: j.name, text: j.text, ts: j.ts }]
         if (!items.length) return
+        // 2026-11-11（主人要求）：分享的视频「看了就行，不需要很快回」，且要和自己刷到的做区分。
+        // 做法：这次只叫醒她去看（subtitles/debrief），并把回复排进 dm-share-pending.json；
+        //      20~40 分钟后由 shareDueTick 再叫她回，回复要落在"主人专门发的那条"上。
+        const shareList = []
         const block = items.slice(0, 5).map((it) => {
           const mine = String(it.mid) === ownerMid
           const who = `${it.name || "mid " + it.mid}（${it.mid}）`
-          return mine
-            ? `· 主人 ${who} 说：${String(it.text ?? "").slice(0, 300)}\n  → 直接回：\`dm --msg "…" --go\` ✓（不用审核）；而且要比平时更温柔：先回应关心、再答内容，不杠不顶嘴`
-            : `· ${who} 说：${String(it.text ?? "").slice(0, 300)}\n  → 回：\`dm --to ${it.mid} --msg "…" --dry\` → \`--go\`（≤200 字 · 一人一天 3 条 · 一天共 12 条 · **只能回不能主动发** ✓）`
+          const text = String(it.text ?? "").slice(0, 300)
+          const bv = mine ? ((text.match(/\bBV[0-9A-Za-z]{10}\b/) ?? [])[0] ?? "") : ""
+          if (bv) shareList.push({ bv, text, name: it.name })
+          if (!mine) return `· ${who} 说：${text}\n  → 回：\`dm --to ${it.mid} --msg "…" --dry\` → \`--go\`（≤200 字 · 一人一天 3 条 · 一天共 12 条 · **只能回不能主动发** ✓）`
+          if (!bv) return `· 主人 ${who} 说：${text}\n  → 直接回：\`dm --msg "…" --go\` ✓（不用审核）；而且要比平时更温柔：先回应关心、再答内容，不杠不顶嘴`
+          return `· 主人 ${who} 发来一个视频：${text}\n  → 这是**他专门发给你看的**（不是你自己刷到的）。先看：\`${TOOL_CMD} subtitles ${bv}\`；想看画面再 \`${TOOL_CMD} debrief ${bv}\`\n  → ⭐ **看完先别回**：他不需要你快回，别秒回「看了」。想法先记着，等会儿我会再叫你回`
         })
+        if (shareList.length) {
+          let q = readSQ()
+          for (const s of shareList) q = addEntry(q, deferQuiet(makeEntry({ bv: s.bv, text: s.text })))
+          writeSQ(q)
+        }
         await ensureSession()
         await promptBili({
           requestId: `bili-whale-dm-${Date.now()}`,
@@ -1005,11 +1022,19 @@ export function startScheduler(ctx, opts) {
               "",
               ...block,
               "",
-              "按 AGENTS.md「私信」做（不要等我说话，直接做）：",
-              "1) 主人 → **直接回，不用审核** ✓，要比平时更温柔（先回应关心，不顶嘴）；其他人 → `dm --to <mid>` 回复（**只回不主动发** ✓）",
-              "2) 一两句就够 —— 私信是聊天，不是评论区 ✗",
-              "3) 吵架 / 要隐私 / 要你代表主人承诺 / 明显是广告或引流 → **不回** ✗（直接不理，别解释）",
-              "4) 回完把对方说的写进日记「偏好校准」✓",
+              ...(shareList.length ? [
+                "按 AGENTS.md「私信」做（不要等我说话，直接做）：",
+                "1) **里面有主人发来的视频**：先看（先 `subtitles`，要看画面再 `debrief`）——看是为了你自己知道它讲的什么，不是任务。",
+                "2) ⭐ **看完先别回**：这条不需要快回，也别回「看了」「收到」交差；想法先记在心里（想写日记也可以）。",
+                "3) 到点（约二十分钟后）我会再叫你回他那条 —— 到时候再认真回。",
+                "4) 其余普通私信照老规矩：主人 → 直接回、更温柔；其他人 → 只回不主动；吵架/要隐私/广告 → 不回。",
+              ] : [
+                "按 AGENTS.md「私信」做（不要等我说话，直接做）：",
+                "1) 主人 → **直接回，不用审核** ✓，要比平时更温柔（先回应关心，不顶嘴）；其他人 → `dm --to <mid>` 回复（**只回不主动发** ✓）",
+                "2) 一两句就够 —— 私信是聊天，不是评论区 ✗",
+                "3) 吵架 / 要隐私 / 要你代表主人承诺 / 明显是广告或引流 → **不回** ✗（直接不理，别解释）",
+                "4) 回完把对方说的写进日记「偏好校准」✓",
+              ]),
             ].join("\n"),
           }],
         }, new AbortController().signal)   // 2026-10-19 修：prompt 的第二个参数是 signal ✗ 漏传会 TypeError
@@ -1017,6 +1042,46 @@ export function startScheduler(ctx, opts) {
         try { fs.appendFileSync(path.join(platformDir(), "dm-tick-err.log"), new Date().toISOString() + " " + (e?.stack ?? e) + "\n") } catch {}
       }
       finally { dmBusy = false }
+    }
+
+    // 2026-11-11：分享视频的「到点回信」——和二十分钟前那次看图分开，形成"慢回 + 专门回复"。
+    async function shareDueTick() {
+      if (!interactEnabled()) return
+      if (dmBusy) return
+      if (peakBlockedNow('分享视频回信')) return
+      if (await budgetBlockedNow('分享视频回信')) return
+      const q = readSQ()
+      const due = dueEntry(q)
+      if (!due) return
+      dmBusy = true
+      try {
+        await ensureSession()
+        await promptBili({
+          requestId: `bili-whale-share-due-${Date.now()}`,
+          sessionId,
+          mode: 'queue',
+          content: [{
+            type: 'text',
+            text: [
+              ...identityContextLines(),
+              toolLine(),
+              `【该回主人那条分享视频了】他之前发给你 ${due.bv}，你已经看过（他当时的原话：${String(due.text || '').slice(0, 120)}）。`,
+              '',
+              `现在回他一条私信：\`${TOOL_CMD} dm --msg "…" --go\``,
+              '这条要和你**自己刷到的**看片总结不一样：',
+              '1) 2~4 句，提一处你注意到的东西（某句台词 / 某个画面 / 哪段舒服或一般），让他看得出你**真的看了他发的这条**；',
+              '2) 别写成看片总结、别贴链接、别说「收到」「看了」就完事；',
+              '3) 不用赶时间，慢一点才是你 —— 这条本来就不需要秒回。',
+              '',
+              '回完这一条就够了，别再连发。',
+            ].join('\n'),
+          }],
+        }, new AbortController().signal)
+        writeSQ(markDone(readSQ(), due.bv))
+        log(`[bili-whale] 分享视频到点：${due.bv} → 已叫她回主人`)
+      } catch (e) {
+        log(`[bili-whale] 分享视频回信叫醒失败：${String(e?.message ?? e).slice(0, 160)}`)
+      } finally { dmBusy = false }
     }
 
   async function listenTick() {
@@ -1416,6 +1481,7 @@ export function startScheduler(ctx, opts) {
     setTimeout(() => { dynTick().catch(() => {}) }, 12_000),
     setTimeout(() => { listenTick().catch(() => {}) }, 15_000),
     setTimeout(() => { dmTick().catch(() => {}) }, 25_000),
+    setTimeout(() => { shareDueTick().catch(() => {}) }, 30_000),
     setTimeout(() => { liveTick().catch(() => {}) }, 20_000),
   ]
   // 2026-10-21（用户定）：四类动态各有固定发布点 —— 到点叫她一次（08/12/16/20）
@@ -1423,6 +1489,8 @@ export function startScheduler(ctx, opts) {
   // 30 秒看一眼"到点没"（2026-10-18 测试期曾改 2.5 秒 ✓ 已还原 ✓），真正间隔由配置定 ✓
   const timer2 = setInterval(() => { listenTick().catch(() => {}) }, 30_000)
   const timerDm = setInterval(() => { dmTick().catch(() => {}) }, 20_000)   // 2026-10-19: 60s -> 20s, 私信要像聊天; 每次只是一个 get_sessions 请求 很轻
+  // 2026-11-11：分享视频的「到点回信」——每 30 秒看一次队列（大部分时候是空读，开销可忽略）
+  const timerShare = setInterval(() => { shareDueTick().catch(() => {}) }, 30_000)
   const timer3 = setInterval(() => { liveTick().catch(() => {}) }, 60_000)     // 直播间：挂了就一直跑，断了自动重挂 ✓
   log(`[bili-whale] 自主生物钟已启动（每 ${TICK_MS / 1000}s tick · 会话 ${sessionId}）；监听 + 直播间监看都挂上了 ✓`)
 
@@ -1441,10 +1509,11 @@ export function startScheduler(ctx, opts) {
       tick().catch(() => {})
       listenTick().catch(() => {})
       dmTick().catch(() => {})
+      shareDueTick().catch(() => {})
       // ⭐ 直播间是**单独开关**：保存设置就立刻生效（点开就跑 ✓ 关掉就停 ✓），不等下一轮定时器
       liveTick().catch(() => {})
     },
-    stop() { clearInterval(timer); clearInterval(timer2); clearInterval(timer3); clearInterval(timerDyn); clearInterval(timerDm); for (const t of startupTimers) clearTimeout(t); try { liveProc?.kill() } catch {} try { permissionListenerOff?.() } catch {} },
+    stop() { clearInterval(timer); clearInterval(timer2); clearInterval(timer3); clearInterval(timerDyn); clearInterval(timerDm); clearInterval(timerShare); for (const t of startupTimers) clearTimeout(t); try { liveProc?.kill() } catch {} try { permissionListenerOff?.() } catch {} },
     /** 切角色时用：停定时器 + 取消当前 DSH 会话的在途回合，避免旧人格继续跑。 */
     async retire() {
       this.stop();
