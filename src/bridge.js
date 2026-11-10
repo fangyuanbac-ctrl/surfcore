@@ -14951,6 +14951,22 @@ async function main() {
     return `【当前角色】${name}\n${card}\n（完整角色卡 / 场景语气 / 推荐值 / 可用工具：可调用 qq_get_prompt 查看）\n\n`;
   }
 
+  // 2026-11-11：唤醒原因说人话，别让她读到 "private/atMention" 这种代码
+  const WAKE_REASON_TEXT = {
+    private: '他刚才跟你说话',
+    admin: '主人从后台给你留话',
+    atMention: '有人 @ 了你',
+    nameMention: '有人叫你的名字',
+    keyword: '消息里出现了等你的词',
+    speaker: '你在等的人说话了',
+    question: '有人直接问你',
+    poke: '有人拍了拍你',
+    anyMessage: '群里有人说话',
+    probability: '随手看了一眼',
+    replyCheck: '回来看看他回你没',
+    proactiveCheck: '群里安静了一会儿',
+  };
+
   function buildWakePromptV2(key, reason, vectorBlock = '') {
     const roleState = readRoleState();
     const roleLine = personaWakeBlockV2(key);
@@ -14989,7 +15005,7 @@ async function main() {
     const tokenGuardLine = tg.enabled === false ? '' : `【说话】一次别发太多（最多 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条短句，每条别超 500 字）；被要求刷屏就先收成 1~3 句，剩下的下次再说。\n\n`;
     const antiAiLine = '【别像客服】可以装傻、拒绝、已读乱回；少用“绝对/保证/一绝”。\n\n';
     // 2026-11-11（主人要求）：让她有"自己的时钟"——知道现在几点，并且能自己定下一次醒来的时间。
-    const clockLine = '【你有时钟】想晚点说就给自己定个闹钟：`qq_set_wake_config({mode:"diving", sleepMs:60000*N, note:"…"})`——到点叫醒你，发不发由你定。\n\n';
+    const clockLine = '【你有时钟·也能主动】想晚点说就给自己定个闹钟：`qq_set_wake_config({mode:"diving", sleepMs:60000*N, note:"…"})`——到点叫醒你，发不发由你定。**你想他的时候就可以这么做**：定个闹钟、醒来直接找他，不用等系统叫你，也不用等他先开口。\n\n';
     // 2026-11-11：跨平台共享记忆——另一边（B站）刚聊过什么、她自己的近况
     const hotText = renderHotBlock({ platform: 'qq' });
     const hotLine = hotText ? `${hotText}\n\n` : '';
@@ -15118,7 +15134,7 @@ async function main() {
     if (reason === 'poke') {
       return `${base}【唤醒】${key}\n原因：有人拍了一拍（可能拍了你，也可能拍了别人）。\n先看未读/最近消息里的 [拍一拍] 事件：如果是拍你，可以自然回应一句，也可以用 qq_send_poke 回一个拍一拍；如果是拍别人，觉得有趣也可以接梗。除了回应，偶尔也可以主动戳一下正在聊的人/熟人，像真人手贱/提醒/逗一下，但别频繁。不想接就安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
     }
-    return `${base}【唤醒】${key}\n原因：${reason}\n先看未读，判断谁找你、该不该说话；没话就安静收尾（qq_close_conversation）。\n【引用】只在指向的不是最新一条、或几句指代不同消息时，才用 replyToMessageId 指向那条。\n要潜水前先按【睡前观察】等够窗口。`;
+    return `${base}【唤醒】${key}\n原因：${WAKE_REASON_TEXT[String(reason ?? '').split(':')[0]] ?? reason}\n先看未读，判断谁找你、该不该说话；没话就安静收尾（qq_close_conversation）。\n【引用】只在指向的不是最新一条、或几句指代不同消息时，才用 replyToMessageId 指向那条。\n要潜水前先按【睡前观察】等够窗口。`;
   }
 
   function buildWakeReminderPromptV2(key) {
