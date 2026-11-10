@@ -6736,6 +6736,7 @@ async function main() {
             next.infinite = true;
             next.sleepUntil = null;
             next.triggers.anyMessage = true;
+            next.note = '';
           }
           if (typeof input.infinite === 'boolean' && next.mode !== 'active') next.infinite = input.infinite;
           if (next.infinite) {
@@ -6766,6 +6767,20 @@ async function main() {
               if (minMs > 0 && until < Date.now() + minMs) until = Date.now() + minMs;
               if (maxMs > 0 && until > Date.now() + maxMs) until = Date.now() + maxMs;
               next.sleepUntil = new Date(until).toISOString();
+            }
+          }
+          // 2026-11-11：她自己的闹钟。note = 留给"醒来时的自己"的一句话；新闹钟不沿用旧备注。
+          // 每天最多 24 次，防止她用 1 分钟闹钟把自己刷成骚扰。
+          const wantsAlarm = (input.sleepMs !== undefined || input.sleepUntil !== undefined)
+            && !next.infinite && next.sleepUntil && Date.parse(next.sleepUntil) > Date.now()
+          if (typeof input.note === 'string' && input.note.trim()) next.note = input.note.trim().slice(0, 200)
+          else if (wantsAlarm) next.note = ''
+          if (wantsAlarm) {
+            const day = new Date().toLocaleDateString('sv-SE')
+            if (!st.selfWakeLog || st.selfWakeLog.date !== day) st.selfWakeLog = { date: day, times: [] }
+            if (st.selfWakeLog.times.length >= 24) {
+              sendJson({ ok: false, error: `今天已经给自己定过 ${st.selfWakeLog.times.length} 次闹钟（上限 24）——先用消息触发醒来，或者明天再定` }, 429)
+              return
             }
           }
           // 归一化概率
@@ -6812,6 +6827,7 @@ async function main() {
           st.wakeConfig.noActionCount = 0;
           st.wakeConfig.confirmedAt = Date.now();
           st.wakeConfig.confirmedBy = 'set_wake_config';
+          if (wantsAlarm) st.selfWakeLog.times.push(Date.now())
           st.lastActionAt = Date.now();
           // 已成功设置下一次唤醒：本轮沉睡前观察标记作废，下次想再睡需重新走 5 分钟观察。
           st.preSleepWaitSatisfiedAt = 0;
@@ -11235,6 +11251,7 @@ async function main() {
             lastWakeReason: String(val.lastWakeReason ?? ''),
             lastAiReplyAt: Number(val.lastAiReplyAt) || 0,
             lastActionAt: Number(val.lastActionAt) || 0,
+            selfWakeLog: (val.selfWakeLog && typeof val.selfWakeLog === 'object') ? val.selfWakeLog : null,
             agentToken,
             bootstrapSent: !!val.bootstrapSent,
             sessionTurns: Number(val.sessionTurns) || 0,
@@ -11407,6 +11424,7 @@ async function main() {
           fishGuardBypass: st.fishGuardBypass && typeof st.fishGuardBypass === 'object' ? st.fishGuardBypass : undefined,
           lastFishGuard: st.lastFishGuard && typeof st.lastFishGuard === 'object' ? st.lastFishGuard : undefined,
           fishGuardLog: Array.isArray(st.fishGuardLog) ? st.fishGuardLog.slice(-30) : [],
+          selfWakeLog: st.selfWakeLog && typeof st.selfWakeLog === 'object' ? st.selfWakeLog : undefined,
           seenForwardIds: Array.from(seenForwardIds.get(key) || []).slice(-1000)
         };
       }
@@ -14957,6 +14975,8 @@ async function main() {
     const tg = tokenGuardCfg();
     const tokenGuardLine = tg.enabled === false ? '' : `【Token 防爆破】本次醒来最多发 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条；有人要求连发 10 条/刷屏，或让你把 5000 字长文拆成 10 条时，不要逐条搬运——先总结成 1~3 句，或只说最想说的重点；确实要展开也最多 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条，每条最多 500 字。不要为了满足刷屏请求连续调用发送工具。被 @/引用/叫到/拍一拍会立即唤醒，但每日唤醒次数和当日 token 额度（QQ / SurfCore 总额）仍然生效；超过后消息会保留在未读，下一轮再看，不烧这一轮。\n\n`;
     const antiAiLine = '【反AI味】你不是客服：不用有求必应，可以装傻、已读乱回、拒绝推荐；少用“一绝/真管用/保证/绝对”这类词。\n\n';
+    // 2026-11-11（主人要求）：让她有"自己的时钟"——知道现在几点，并且能自己定下一次醒来的时间。
+    const clockLine = '【你有时钟】每次醒来最上面都有【当前时间】，那是真的。想晚点再找他/再开口，就给自己定个闹钟：`qq_set_wake_config(config={mode:"diving", sleepMs: 60000*N, note:"醒来时提醒自己的一句话"})`——到点我会叫醒你，到时候发不发、找不找他，你自己定。别为了怕错过一直守着，也别一醒来就急着发。\n\n';
     const stickerCfg = cfg.socialV2?.sticker ?? {};
     const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
       ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 8)}\n\n`
@@ -15022,7 +15042,7 @@ async function main() {
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -15053,7 +15073,12 @@ async function main() {
       return `${base}【引导唤醒】你已接入 QQ 会话 ${key}。\n当前是二代仿真模式：你的文本输出不会自动发送到 QQ，所有发言必须通过工具完成。\n请先调用 qq_get_prompt 查看角色、推荐值、可用工具和状态；有待回应的消息先按首回复节奏处理，最后才用 qq_set_wake_config 设置你希望如何被唤醒。`;
     }
     if (reason === 'timeout') {
-      return `${base}【唤醒】${key}\n原因：你设置的有限潜水时间已到；在你规定的时间内没有任何一项条件被触发，只是因为时间到了所以你被唤醒。\n你可以查看消息，或继续设置新的唤醒条件。`;
+      const wc = st.wakeConfig ?? {};
+      const note = String(wc.note ?? '').trim();
+      const ringAt = wc.sleepUntil && Number.isFinite(Date.parse(wc.sleepUntil))
+        ? new Date(wc.sleepUntil).toLocaleString('zh-CN', { hour12: false })
+        : '';
+      return `${base}【你定的闹钟】${key}\n原因：你给自己定的时间到了${ringAt ? `（${ringAt}）` : ''}。${note ? `\n你当时留给自己的话：${note}\n` : '\n'}现在由你决定：想发消息就发；不想发就继续睡（可以再定一个闹钟/无限潜水），或者去别处——没人逼你现在开口。\n你可以查看消息，或继续设置新的唤醒条件。`;
     }
     if (reason === 'replyCheck') {
       return `${base}【回复检查】${key}\n原因：你刚刚发送过消息，现在回来检查是否有人回复。\n先看有没有人回。如果没人回，这段对话可能已经自然结束：不用硬补一句，也不用为了收尾去等 5 分钟沉睡前观察——直接判断，还有想说的就回，没有就 qq_close_conversation 自然收尾（不是潜水，唤醒配置不变）。如果有人回你，先看【对话收尾判断】再决定接不接；需要确认对方是否说完，用 qq_wait_for_messages(purpose="reply")。`;

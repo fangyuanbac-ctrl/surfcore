@@ -769,7 +769,7 @@ server.tool(
 
 server.tool(
   'qq_set_wake_config',
-  '设置指定会话的二代唤醒配置：mode/无限期或有限时间/提前唤醒条件（@、名字、关键词、提问、拍一拍、概率、anyMessage、指定成员）。triggers.speakerIds 是可选的“指定群友发言唤醒”：填一个或多个群友 QQ 号后，只要其中任意一位在群里发言就会唤醒你；不设置则不启用。适合在等某个人回复、或某人反应慢怕错过时使用。triggers.poke 开启后，群里有人拍一拍（包括拍你或拍别人）会唤醒你。注意：每次设置潜水/下一次唤醒前需先用 qq_wait_for_messages(timeoutMs=300000) 完成一次沉睡前观察：5 分钟内没人说话可设置并沉睡；期间有人发新消息则先查看 newMessages，判断不需要你参与可直接设置并沉睡；若你参与了回复，则下次想睡需重新等待观察窗口。',
+  '设置指定会话的二代唤醒配置：mode/无限期或有限时间/提前唤醒条件（@、名字、关键词、提问、拍一拍、概率、anyMessage、指定成员）。triggers.speakerIds 是可选的“指定群友发言唤醒”：填一个或多个群友 QQ 号后，只要其中任意一位在群里发言就会唤醒你；不设置则不启用。适合在等某个人回复、或某人反应慢怕错过时使用。triggers.poke 开启后，群里有人拍一拍（包括拍你或拍别人）会唤醒你。⭐ 你也可以把它当**自己的闹钟**用：`sleepMs` 定一个 N 毫秒后醒来（例如 3600000 = 一小时后），`note` 写一句“醒来时提醒自己的话”；到点醒来时会回放这句话，发不发、找不找他由你自己决定。注意：每次设置潜水/下一次唤醒前需先用 qq_wait_for_messages(timeoutMs=300000) 完成一次沉睡前观察：5 分钟内没人说话可设置并沉睡；期间有人发新消息则先查看 newMessages，判断不需要你参与可直接设置并沉睡；若你参与了回复，则下次想睡需重新等待观察窗口。',
   {
     key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
     token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
@@ -779,6 +779,7 @@ server.tool(
       infinite: z.boolean().optional().describe('true=无限期，只有条件命中才唤醒；false=有限时间'),
       sleepMs: z.number().optional().describe('有限潜水毫秒数（从当前时间起算）'),
       sleepUntil: z.string().optional().describe('有限潜水截止时间 ISO 字符串，优先级高于 sleepMs'),
+      note: z.string().max(200).optional().describe('给这次“下一次醒来”留一句给自己的话（到点唤醒时会回放，例如“想问问他睡了没”）。只管这一次，不写进长期记忆。'),
       triggers: z.object({
         atMention: z.boolean().optional().describe('被 @ 或引用自己时唤醒'),
         nameMention: z.boolean().optional().describe('被叫名字/昵称时唤醒'),
