@@ -58,6 +58,16 @@ export const DEFAULTS = {
   night: { windows: [{ start: '20:00', end: '24:00', wakes: 1 }], skipChance: 0.3, maxVideos: 5, minGapMin: 20 },
   // 评论区鱼群保护：鱼太多不发新楼层；优先回鱼；给鱼点赞（设置页可改）。
   fishGuard: DEFAULT_BILI_FISH_GUARD,
+  // 视频互动（2026-11-10 主人定）：按「分数/20」的权重点赞 → 投币 → 收藏，逐级掷骰，可能什么都不做。
+  //   probabilities 是"上一层做了才掷"的条件概率；daily 是硬上限（投币不可撤回，所以很紧）。
+  engage: {
+    enabled: true,
+    likeDaily: 8,
+    coinDaily: 3,
+    favDaily: 2,
+    minGapMin: 5,
+    probabilities: { like: 0.55, coin: 0.45, fav: 0.40 },
+  },
   // B站 自己的 DSH 会话权限（2026-10-23）：
   //   %USERPROFILE% 在 workspace-write 下会因 WRITE_OWNER 起不了命令，
   //   定时醒来的 she 一条 bili.mjs 都跑不了。默认只给这一个会话完全访问；

@@ -61,6 +61,8 @@ const BIDI_DEFAULTS = {
   },
   share: { enabled: true, via: 'dynamic', minScore: 13, silentAfterDays: 3, decayPerDay: 1 },
   fishGuard: DEFAULT_BILI_FISH_GUARD,
+  // 视频互动（2026-11-10）：按分数权重点赞/投币/收藏，组合随机；投币不可撤回所以额度很紧。
+  engage: { enabled: true, likeDaily: 8, coinDaily: 3, favDaily: 2, minGapMin: 5, probabilities: { like: 0.55, coin: 0.45, fav: 0.40 } },
   toolsPath: '',
   shots: { dir: '', retentionDays: 7, maxMB: 0 },
 };
@@ -567,6 +569,19 @@ export function normalizeBiliConfig(input) {
     [...cfg.preferences.like, ...cfg.preferences.keywords],
   );
   cfg.fishGuard = normalizeBiliFishGuard(cfg.fishGuard ?? DEFAULT_BILI_FISH_GUARD);
+  // 视频互动（2026-11-10）：额度/间隔/概率都收敛，避免设置页传上来奇怪的值。
+  cfg.engage = isPlainObject(cfg.engage) ? cfg.engage : {};
+  cfg.engage.enabled = cfg.engage.enabled !== false;
+  cfg.engage.likeDaily = finiteNumber(cfg.engage.likeDaily, 8, 0, 50, { integer: true });
+  cfg.engage.coinDaily = finiteNumber(cfg.engage.coinDaily, 3, 0, 20, { integer: true });
+  cfg.engage.favDaily = finiteNumber(cfg.engage.favDaily, 2, 0, 20, { integer: true });
+  cfg.engage.minGapMin = finiteNumber(cfg.engage.minGapMin, 5, 0, 240, { integer: true });
+  const engageProb = isPlainObject(cfg.engage.probabilities) ? cfg.engage.probabilities : {};
+  cfg.engage.probabilities = {
+    like: finiteNumber(engageProb.like, 0.55, 0, 1),
+    coin: finiteNumber(engageProb.coin, 0.45, 0, 1),
+    fav: finiteNumber(engageProb.fav, 0.40, 0, 1),
+  };
   cfg.notify = isPlainObject(cfg.notify) ? cfg.notify : {};
   cfg.notify.type = ['none', 'desktop', 'qq', 'dm', 'webhook', 'command'].includes(cfg.notify.type) ? cfg.notify.type : 'none';
   cfg.notify.template = cfg.notify.template === 'markdown' ? 'markdown' : 'text';

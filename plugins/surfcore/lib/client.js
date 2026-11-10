@@ -1463,6 +1463,16 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("limits.replyPerVideoMax", "同一视频回复上限（条/窗口）", "默认 2；0 = 不限（不推荐）", "number", { min: 0, max: 100 }),
         F("limits.perThreadMin", "同一条评论冷却（分钟）", "默认 1440（24 小时）", "number", { min: 0, max: 10080 }),
       ]},
+      { group: "视频互动（点赞/投币/收藏）", note: "按分数权重决定做哪几种：分数越高越可能点赞→投币→收藏，也可能什么都不做。投币不可撤回，默认很紧。", fields: [
+        F("engage.enabled", "允许给视频点赞/投币/收藏", "关 = 完全不做（评论区给鱼点赞不受影响）", "switch"),
+        F("engage.likeDaily", "点赞 / 天", "默认 8", "number", { min: 0, max: 50 }),
+        F("engage.coinDaily", "投币 / 天", "默认 3；投币不可撤回", "number", { min: 0, max: 20 }),
+        F("engage.favDaily", "收藏 / 天", "默认 2；还要过收藏判据", "number", { min: 0, max: 20 }),
+        F("engage.minGapMin", "两次互动最小间隔（分钟）", "默认 5；太密像刷", "number", { min: 0, max: 240 }),
+        F("engage.probabilities.like", "点赞概率", "0~1（再乘分数权重）", "number", { min: 0, max: 1 }),
+        F("engage.probabilities.coin", "点了之后再投币的概率", "0~1", "number", { min: 0, max: 1 }),
+        F("engage.probabilities.fav", "投了之后再收藏的概率", "0~1", "number", { min: 0, max: 1 }),
+      ]},
       { group: "四类动态", note: "每类一天一条；时段从该类的点开始，到下一类启用的点为止。前缀留空 = 不加固定开头。", fields: [
         F("dynamics.enabled", "四类动态总开关", "关掉 = 不再定时提醒发动态", "switch"),
         F("dynamics.gapMin", "任意两条动态间隔（分钟）", "默认 30；5~240", "number", { min: 5, max: 240 }),
