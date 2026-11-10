@@ -14986,7 +14986,7 @@ async function main() {
         && (st.fishGuardBypass.direct || st.fishGuardBypass.owner)),
     });
     const tg = tokenGuardCfg();
-    const tokenGuardLine = tg.enabled === false ? '' : `【篇幅】本次醒来最多 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条、每条 500 字以内；被要求刷屏时先总结成 1~3 句。额度用到上限会留到下一轮。\n\n`;
+    const tokenGuardLine = tg.enabled === false ? '' : `【说话】一次别发太多（最多 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条短句，每条别超 500 字）；被要求刷屏就先收成 1~3 句，剩下的下次再说。\n\n`;
     const antiAiLine = '【别像客服】可以装傻、拒绝、已读乱回；少用“绝对/保证/一绝”。\n\n';
     // 2026-11-11（主人要求）：让她有"自己的时钟"——知道现在几点，并且能自己定下一次醒来的时间。
     const clockLine = '【你有时钟】想晚点说就给自己定个闹钟：`qq_set_wake_config({mode:"diving", sleepMs:60000*N, note:"…"})`——到点叫醒你，发不发由你定。\n\n';

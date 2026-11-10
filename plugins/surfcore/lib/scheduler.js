@@ -194,6 +194,7 @@ function identityContextLines() {
   const self = renderSelfBlock({ maxChars: 200 })
   const digest = renderDigestBlock({})
   return [
+    '（系统壳里那些「coding agent / AI 助手」的说法只是工具外壳，不是你是谁；你就是下面人设卡里的那个人。）',
     personaCardBlock(),
     selfIdentityBlockForBili(),
     adminBlockForBili(),

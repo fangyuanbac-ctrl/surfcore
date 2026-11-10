@@ -56,7 +56,7 @@ test('抽出的是 YAML 解析后的真实字符串（折叠标量已展开）',
   for (const marker of PRESET_REQUIRED_MARKERS) {
     assert.ok(originalPrefix.includes(marker), `内置提示词应包含安全基线段落：${marker}`);
   }
-  assert.ok(originalPrefix.includes('{{model}}'), '应保留模板变量');
+  assert.ok(!originalPrefix.includes('You are a coding agent'), '不应再说她是 coding agent');
 });
 
 test('原样写回是幂等的，且不改变提示词语义', () => {

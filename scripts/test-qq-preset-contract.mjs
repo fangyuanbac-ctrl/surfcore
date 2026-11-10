@@ -13,10 +13,10 @@ const prefix = persona?.config?.prefix ?? '';
 
 test('reserved2 YAML resolves to the expected persona and template variables', () => {
   assert.equal(persona?.name, '@deepseek-ai/dsh-persona');
-  assert.match(prefix, /\{\{model\}\}/);
+  assert.ok(!prefix.includes('You are a coding agent'), 'prompt must not tell her she is a coding agent');
   // DSH 0.2.1-rc.2 起 {{cwd}} 不再由 agent loop 注册；QQ 会话改用固定说明，
   // 否则模板变量会原样泄漏到提示词里。
-  assert.equal(persona.config.suffix, 'This conversation happens on QQ, not in a local shell.');
+  assert.equal(persona.config.suffix, '你现在在 QQ 上，不是电脑里的程序。');
   assert.equal(Object.hasOwn(persona.config, 'text'), false);
 });
 
@@ -82,7 +82,7 @@ test('social autonomy and visual, forwarding, sticker and web capabilities remai
     '不会自动发送到 QQ', 'qq_get_message_images', 'qq_get_forward_msg', 'nestedForwardIds',
     'qq_send_poke', 'qq_list_stickers', 'qq_get_sticker_image', 'qq_send_sticker',
     'qq_collect_sticker', 'qq_sticker_note', 'qq_get_self_image',
-    'qq_set_sticker_remark', '只有管理端明确开启后才能用',
+    'qq_set_sticker_remark', '只有主人在后台开启后才能用',
     'qq_list_voices', 'qq_send_voice', 'verified=true 才代表这条语音确实落地',
     '是否可用以工具是否存在和返回为准', 'VOICE_TOOL_DISABLED', '不要假装发了语音',
     // text→本地 TTS：模型得知道能「说一句」并带语气标记，否则永远只发文字
