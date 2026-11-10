@@ -33,7 +33,7 @@ import {
 } from './paths.js'
 import { resolvePersonaFile } from './persona.js'
 import { makeEntry, addEntry, pendingEntries } from './share-queue.mjs'
-import { appendHotEvent, renderHotBlock, renderSelfBlock } from '../../../src/shared-memory.js'
+import { appendHotEvent, renderHotBlock, renderSelfBlock, renderDigestBlock } from '../../../src/shared-memory.js'
 import { readUnified } from './store.js'
 import { memoryCardPromptBlock } from './memory-card.js'
 import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-identity.js'
@@ -192,6 +192,7 @@ function memoryCardBlockForBili() {
 function identityContextLines() {
   const hot = renderHotBlock({ platform: 'bili' })
   const self = renderSelfBlock({ maxChars: 200 })
+  const digest = renderDigestBlock({})
   return [
     personaCardBlock(),
     selfIdentityBlockForBili(),
@@ -201,6 +202,7 @@ function identityContextLines() {
     memoryCardBlockForBili(),
     hot,
     self,
+    digest,
   ].filter(Boolean)
 }
 

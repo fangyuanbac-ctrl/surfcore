@@ -17,7 +17,7 @@ import { GEN1_ROLE_LINE_RE, parseRoleSections, roleCharStats, roleSectionReport,
 import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
-import { appendHotEvent, renderHotBlock, renderSelfBlock } from './shared-memory.js';
+import { appendHotEvent, renderHotBlock, renderSelfBlock, appendDigest, appendSelfNote, renderDigestBlock } from './shared-memory.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
 import { looksLikeUnfinished, selectWaitBatch } from './v2-wait.js';
@@ -12184,6 +12184,14 @@ async function main() {
       config,
     });
     st.closure = record;
+    // 2026-11-11：跨平台摘要层——收尾摘要进共享摘要（B站 她也知道"最近和主人聊到哪"）
+    try {
+      const gist = String(record.summary ?? '').trim();
+      if (gist) {
+        appendDigest({ platform: 'qq', gist, next: String(record.nextOpening ?? '') });
+        appendSelfNote({ platform: 'qq', text: `和主人聊到：${gist}` });
+      }
+    } catch {}
     st.lastActionAt = Date.now();
     st.wakeConfig.noActionCount = 0;
     ensureWakeableV2(st, { key });
@@ -14987,6 +14995,9 @@ async function main() {
     const hotLine = hotText ? `${hotText}\n\n` : '';
     const selfText = renderSelfBlock({ maxChars: 200 });
     const selfLine = selfText ? `${selfText}\n\n` : '';
+    // 2026-11-11：跨天延续的摘要（最近和主人聊到哪，别重复问）
+    const digestText = renderDigestBlock({});
+    const digestLine = digestText ? `${digestText}\n\n` : '';
     const stickerCfg = cfg.socialV2?.sticker ?? {};
     const stickerLine = stickerCfg.enabled !== false && stickerCfg.includeInPrompt !== false
       ? `${buildStickerStrategyHint()}\n${buildStickerContext(stickerEntries, stickerCfg.promptMaxStickers ?? 8)}\n\n`
@@ -15052,7 +15063,7 @@ async function main() {
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + hotLine + selfLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + hotLine + selfLine + digestLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,

@@ -139,3 +139,94 @@ export function renderSelfBlock({ maxChars = 200 } = {}) {
     return tail.length ? `【你自己的近况】（两边共享）\n${tail.join('\n')}` : ''
   } catch { return '' }
 }
+
+// ── 摘要层（跨天延续）────────────────────────────────────────────
+// 只存"和主人聊到哪、下次怎么接"的抽象摘要（来自收尾摘要），不存原文。
+const DIGEST_KEEP = 200
+const DIGEST_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+const DIGEST_TEXT_MAX = 160
+
+const digestFile = () => path.join(DIR, 'digest.jsonl')
+
+function safeDigestText(text) {
+  let s = String(text ?? '').replace(/[\r\n\u0000-\u001f]+/g, ' ').trim()
+  if (!s) return ''
+  try {
+    const scan = scanText(s)
+    if ((scan.hits ?? []).length) return ''
+  } catch { return '' }
+  return s.slice(0, DIGEST_TEXT_MAX)
+}
+
+/** 记一条跨平台摘要（gist=聊到哪，next=下次怎么接）。同内容 10 分钟内去重。 */
+export function appendDigest({ platform, gist, next = '', ts = Date.now() }) {
+  const safe = safeDigestText(gist)
+  if (!safe) return false
+  const ev = {
+    ts: Number(ts) || Date.now(),
+    platform: platform === 'bili' ? 'bili' : 'qq',
+    gist: safe,
+    next: safeDigestText(next),
+  }
+  try {
+    ensureDir()
+    const file = digestFile()
+    try {
+      const lines = fs.readFileSync(file, 'utf8').trim().split('\n')
+      const last = lines.length ? JSON.parse(lines[lines.length - 1]) : null
+      if (last && last.gist === ev.gist && ev.ts - Number(last.ts) < 10 * 60 * 1000) return false
+    } catch {}
+    fs.appendFileSync(file, JSON.stringify(ev) + '\n')
+    try {
+      const all = fs.readFileSync(file, 'utf8').trim().split('\n')
+      if (all.length > DIGEST_KEEP) fs.writeFileSync(file, all.slice(-DIGEST_KEEP).join('\n') + '\n')
+    } catch {}
+    return true
+  } catch { return false }
+}
+
+/** 读最近几天的摘要（最新的在最后）。 */
+export function readDigest({ limit = 3, maxAgeMs = DIGEST_MAX_AGE_MS } = {}) {
+  try {
+    const cutoff = Date.now() - Number(maxAgeMs || DIGEST_MAX_AGE_MS)
+    const rows = []
+    for (const line of fs.readFileSync(digestFile(), 'utf8').split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const ev = JSON.parse(line)
+        if (!ev || !ev.gist || !Number.isFinite(Number(ev.ts)) || Number(ev.ts) < cutoff) continue
+        rows.push({ ts: Number(ev.ts), platform: ev.platform === 'bili' ? 'bili' : 'qq', gist: String(ev.gist), next: String(ev.next ?? '') })
+      } catch {}
+    }
+    rows.sort((a, b) => a.ts - b.ts)
+    return rows.slice(-Math.max(1, Number(limit) || 3))
+  } catch { return [] }
+}
+
+/** 给唤醒提示注入：最近和主人聊到哪、下次怎么接（≤240 字）。 */
+export function renderDigestBlock({ limit = 3, maxChars = 240 } = {}) {
+  const rows = readDigest({ limit })
+  if (!rows.length) return ''
+  const day = (ts) => {
+    const d = new Date(ts)
+    const now = new Date()
+    const same = d.toDateString() === now.toDateString()
+    if (same) return '今天'
+    const days = Math.round((now.setHours(0, 0, 0, 0) - new Date(ts).setHours(0, 0, 0, 0)) / 86_400_000)
+    return days === 1 ? '昨天' : `${Math.max(2, days)} 天前`
+  }
+  const lines = rows.map((r) => `· ${day(r.ts)} · 聊到「${r.gist}」${r.next ? `；下次可接：${r.next}` : ''}`)
+  let block = `【最近和主人聊过】（跨天延续，别重复问）\n${lines.join('\n')}`
+  if (block.length > maxChars) {
+    const kept = []
+    let len = 0
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (len + lines[i].length + 1 > maxChars - 30) break
+      kept.unshift(lines[i])
+      len += lines[i].length + 1
+    }
+    block = `【最近和主人聊过】（跨天延续，别重复问）\n${kept.join('\n')}`
+  }
+  return block
+}
+
