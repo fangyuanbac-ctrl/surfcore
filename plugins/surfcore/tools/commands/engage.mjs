@@ -240,7 +240,6 @@ if (done.length) {
   state.log = [...(state.log ?? []), { at: new Date().toISOString(), bv, title: vid.title, score: sc.score, weight: plan.weight, done, failed }].slice(-100)
   saveState(state)
 }
-void DAY
 plan.done = done
 plan.failed = failed
 plan.text = [
