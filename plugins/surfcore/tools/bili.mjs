@@ -45,6 +45,7 @@ const map = {
   'dm-await': ['commands/dm-await.mjs', '私信监听（只认主人；命中打印 DM_HIT）'],
   fav: ['commands/fav.mjs', '收藏（我想留着）：判据强制 · --list / --check / <BV> --reason … --dry|--go'],
   engage: ['commands/engage.mjs', '视频互动（按分数权重点赞/投币/收藏，组合随机）：<BV> [--score N] [--dry|--go] [--actions like,coin] / --status'],
+  hot: ['commands/hot.mjs', '看高赞评论（只读，学语感用）：<BV> [--n 8] [--json]'],
   dm: ['commands/dm.mjs', '私信（专属通道）：一天 1 条 · 只发主人 · 必须互关（都写死）'],
   comment: ['commands/comment.mjs', '发一条视频评论；带 --root/--parent 就是二级回复'],
   'reply-draft': ['commands/reply-draft.mjs', '待审回复（B 档：发前审核）：add 进队列 / list / drop / take'],

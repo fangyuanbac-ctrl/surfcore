@@ -180,6 +180,18 @@ if (SHARE) {
   }
 }
 
+// 2026-11-10（主人要求）：**回复别人的评论不要句号收尾** —— 句号看起来像书面回复/客服。
+// 只去结尾的「。」（不动正文内部标点，避免改她的语气），dry 也会跑，方便核对。
+const IS_REPLY = Boolean(root || parent)
+if (IS_REPLY && !SHARE) {
+  const before = String(message ?? '')
+  const stripped = before.replace(/[。]+\s*$/u, '').replace(/[ \t]+$/u, '')
+  if (stripped !== before) {
+    message = stripped
+    console.log(`  [去句号] 楼中楼结尾的句号已去掉（${[...before].length} → ${[...message].length} 字）`)
+  }
+}
+
 // "同一个人只回一条"（可选 · 2026-10-17 加）：只在二级回复（--root + --parent）时生效。
 // 用在"只回直接回她的人"那条流程里 → 同一个人 30 天内不会被回第二次（防拉锯、防被当聊天机器人）。
 // 放在入口处（--dry 也会跑），这样"能不能回"在发之前就能知道。

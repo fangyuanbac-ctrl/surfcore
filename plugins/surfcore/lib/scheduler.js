@@ -303,6 +303,21 @@ function diaryPushLines() {
        "   （2026-10-18 主人定：推**日记内容**，不只是流水账 ✓ 它读设置页「消息推送」的配置）"]
 }
 
+/** 她最近在评论区说过的话（学语感 + 防重复句式；只读本地账 quota.json）。 */
+function recentSelfComments(limit = 3) {
+  try {
+    const q = JSON.parse(fs.readFileSync(path.join(platformDir(), 'quota.json'), 'utf8'))
+    return (q.log ?? [])
+      .filter((x) => x.type === 'comment' && x.note)
+      .slice(-limit)
+      .map((x) => ({
+        at: String(x.at ?? ''),
+        target: String(x.target ?? ''),
+        note: String(x.note).replace(/\s+/g, ' ').slice(0, 70),
+      }))
+  } catch { return [] }
+}
+
 function wakePrompt(st, tools = '') {
   const L = limitsNow()
   const B = config()
@@ -333,6 +348,15 @@ function wakePrompt(st, tools = '') {
       ]
     })(),
     ...silenceLines(),
+    ...(() => {
+      const recent = recentSelfComments(3)
+      if (!recent.length) return []
+      return [
+        '【你最近在评论区说过的话】别重复同样的开头/句式；同一个视频别再说第二遍：',
+        ...recent.map((r) => `· ${r.at.slice(5, 16).replace('T', ' ')} ${r.target}：${r.note}`),
+        '',
+      ]
+    })(),
     '按 AGENTS.md 的「看的那晚」流程走一遍（不要等我说话，直接做）：',
     ...(SILENT
       ? ['⛔ **沉默逛 B 站已开启：本轮只看不说。** 只做 deps / feed / debrief / score / 日记；禁止评论、回复、搭话、发动态、分享、私信、弹幕；不要调用 comment / daily / share-dynamic / dynamic / dm / danmaku 的 --go。']
@@ -361,15 +385,21 @@ function wakePrompt(st, tools = '') {
     '4.7) ⭐ **每次醒来至少发一条主动评论（2026-10-23 主人定的硬规则）**：',
     '     看完想吐槽/想夸/想接梗/想补充 → 直接发一条普通评论（不 @ 我，是你自己在说话）：',
     '     `recon <BV>` 拿 aid → `comment --oid <aid> --bvid <BV> --message "…" --auto --dry` → 改成 `--go` → `thread` 复核 ✓',
+    '     ⭐ **先看这条视频的高赞评论再想自己怎么写**：`hot <BV> --n 8` —— 看他们怎么说话（多短、怎么起头、',
+    '        有没有标点、是不是一句就完）；学**语感**，不抄内容、也不抄人家句子 ✗',
+    '     ⭐ **像人说话**：一条一般 8~30 字，想到什么说什么；也可以只回两三个字（「草」「懂了」「这个确实」「笑死」「？？」）；',
+    '        别每条都「先接梗 → 再观点 → 再总结」，也别每条都点时间点/插件名（那是汇报，不是聊天）✗',
+    '     ⭐ **标点**：正文结尾不要句号；句中优先逗号、空格或直接断开，别写成一整段书面语 ✗',
     `     ⚠️ **鱼群泛滥时默认强制聚拢**（当前设置：${B.fishGuard?.forceGather === false ? '关；要强制就加 --force-gather' : '开'}）：就算没有“回复少/新鲜/没回过”的鱼楼，也强行挑一条鱼楼回；`,
     '        **不许拿“没有可聚拢鱼楼”当理由不发**。设置页「鱼群保护 → 每次醒来强制聚拢」默认开；仍占主动评论额度 ✓',
     '     ⚠️ **不带 --share 才是普通评论**；带 --share 才是"分享给我"（那条才要评分 + rank 1 + @ 我 ✓）',
     '     ⚠️ 分寸：**代码硬上限** 一天 ' + capText(L.daily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一 UP ' + L.perUpMin + ' 分钟 1 条 · 同一视频 ' + L.perVideoMin + ' 分钟 1 条（这三条只管顶层评论；回复/搭话另算）',
     '        （额度/冷却满了就停，别硬刷；这不是“强制”能绕过的 ✓）',
     // 2026-10-20（用户定）：**热评也能搭话** —— 挂在别人评论下面的楼中楼，不是顶层 ✓
-    '4.8) ⭐ **搭话**：`debrief` 的热评里，有人说到你心坎里 / 有明显错漏 / 想接个梗 → 回他一句：',
+    '4.8) ⭐ **搭话**：`hot <BV> --n 8` 或 `debrief` 的热评里，有人说到你心坎里 / 有明显错漏 / 想接个梗 → 回他一句：',
     '     `comment --oid <aid> --bvid <BV> --root <rpid> --parent <rpid> --message "…" --auto --ta --dry` → `--go`',
-    '     ⚠️ **必须带 `--ta`** —— 那是"我去搭别人"的账（' + capText(L.taDaily) + ' 条/天）；不带 `--ta` 的楼中楼算"回找我的人"（另一本账）✗',
+    '     ⚠️ 楼中楼正文**不要写 @昵称** —— B站 自己会显示「回复 @xx」，再写一遍就显得很机器 ✗',
+    '     ⚠️ **结尾不要句号**（脚本发之前也会自动去掉一次）；能一句话说完就一句话，别凑成小作文 ✓',
     '     ⚠️ 这是**楼中楼**（挂在对方那条评论下面），rpid 就是 debrief 里那个 rpid（root 和 parent 填同一个）',
     '     ⚠️ 硬上限：一天 ' + capText(L.taDaily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一条评论 ' + Math.round(L.perThreadMin / 60) + ' 小时只回一次（撞上就被拒 ✗）',
     '     ⚠️ **同一视频 ' + L.replyPerVideoWindowMin + ' 分钟内最多回 ' + L.replyPerVideoMax + ' 条**（回复和搭话合并算）—— 超了换一个视频，别在一个视频底下连着回，看着像刷屏 ✗',
