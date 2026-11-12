@@ -3816,7 +3816,7 @@ async function main() {
     } catch {}
   }
 
-  function retireSession(key) {    const sessionId = state.sessions[key];
+  function retireSession(key, { graceMs = 0 } = {}) {    const sessionId = state.sessions[key];
     delete state.sessions[key];
     delete state.sessionPolicies[key];
     // 按 key 记账的内存态在**有映射和无映射时都要清**：一条被移出白名单、
@@ -3848,7 +3848,17 @@ async function main() {
     const st = socialV2.conversations.get(key);
     if (st) {
       // 保留旧 token 在脱敏集合中，但撤销它的调用权限。
+      // 例外：换会话（graceMs>0）时给上一代 15 分钟认证宽限——这一轮可能已经带着旧 token
+      // 在跑，立刻失效会把它打成 401（§91 首轮令牌失效）。重置/撤权路径 graceMs=0，立即失效。
+      const oldToken = String(st.agentToken || '');
       st.agentToken = crypto.randomBytes(24).toString('hex');
+      if (graceMs > 0 && oldToken) {
+        st.prevAgentToken = oldToken;
+        st.prevAgentTokenUntil = Date.now() + graceMs;
+      } else {
+        st.prevAgentToken = '';
+        st.prevAgentTokenUntil = 0;
+      }
       rememberAgentToken(key, st.agentToken);
       st.bootstrapSent = false;
       st.modelSeenSeqs = new Set();
@@ -4550,7 +4560,11 @@ async function main() {
     const agentTokenOk = (key, token) => {
       const canonical = canonicalV2Key(key);
       const st = socialV2.conversations.get(canonical ?? key);
-      return !!st && !!st.agentToken && tokenEq(token, st.agentToken);
+      if (!st || !st.agentToken || typeof token !== 'string' || !token) return false;
+      if (tokenEq(token, st.agentToken)) return true;
+      // 换会话的宽限期（§91）：退役时这一轮可能已经带着旧 token 在跑，立刻失效会把它
+      // 打成「未授权：智能体调用携带的会话令牌无效」。宽限期只由换会话路径设置，重置/撤权仍立即失效。
+      return !!st.prevAgentToken && Number(st.prevAgentTokenUntil) > Date.now() && tokenEq(token, st.prevAgentToken);
     };
     /**
      * 令牌是否匹配**任意**一个活跃二代会话。
@@ -4562,8 +4576,12 @@ async function main() {
      */
     const isLiveAgentToken = (token) => {
       if (typeof token !== 'string' || !token) return false;
+      const now = Date.now();
       for (const st of socialV2.conversations.values()) {
-        if (st?.agentToken && tokenEq(token, st.agentToken)) return true;
+        if (!st) continue;
+        if (st.agentToken && tokenEq(token, st.agentToken)) return true;
+        // 与 agentTokenOk 一致：换会话宽限期内，上一代 token 也算「活令牌」。
+        if (st.prevAgentToken && Number(st.prevAgentTokenUntil) > now && tokenEq(token, st.prevAgentToken)) return true;
       }
       return false;
     };
@@ -11329,6 +11347,8 @@ async function main() {
             lastActionAt: Number(val.lastActionAt) || 0,
             selfWakeLog: (val.selfWakeLog && typeof val.selfWakeLog === 'object') ? val.selfWakeLog : null,
             agentToken,
+            prevAgentToken: String(val.prevAgentToken ?? ''),
+            prevAgentTokenUntil: Number(val.prevAgentTokenUntil) || 0,
             bootstrapSent: !!val.bootstrapSent,
             sessionTurns: Number(val.sessionTurns) || 0,
             sessionTokens: Number(val.sessionTokens) || 0,
@@ -11465,6 +11485,9 @@ async function main() {
           lastAiReplyAt: st.lastAiReplyAt,
           lastActionAt: st.lastActionAt,
           agentToken: st.agentToken,
+          // 换会话宽限期字段必须持久化：桥接重启后仍在跑的那一轮不该被重启打断成 401。
+          prevAgentToken: String(st.prevAgentToken ?? ''),
+          prevAgentTokenUntil: Number(st.prevAgentTokenUntil) || 0,
           bootstrapSent: st.bootstrapSent,
           // 会话滚动状态必须跨重启保留：否则 sessionTurns 归零、handoffPending 丢失，
           // 用户会看到「刚满 2 次又归零」或「换了会话但没接上」。
@@ -15398,7 +15421,9 @@ async function main() {
       st.sessionBaseTokens = 0;
       st.rolloverPending = false;
       saveSocialV2State();
-      retireSession(key);
+      // §91：换会话是一次「设计内的令牌轮换」，给上一代留 15 分钟认证宽限，
+      // 让可能还在跑的这一轮把已拿到的工具调用安全跑完。
+      retireSession(key, { graceMs: 15 * 60 * 1000 });
       log(`[rollover] ${key} 上下文 ${contextTokens} / 累计 ${totalTokens} token / ${wakes} 次唤醒，换新会话${st.handoffPending ? '（带交接）' : ''}`);
       return { contextTokens, totalTokens, wakes, handoff: Boolean(st.handoffPending) };
     } finally {
