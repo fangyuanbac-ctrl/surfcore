@@ -266,3 +266,18 @@ export function readWatchHistory({
     generatedAt: new Date().toISOString(),
   }
 }
+
+/**
+ * 这个 BV 最近一次观看有没有真抽帧（2026-11-12，报告 §103）。
+ * 用途：评论里声称「看过/看完了」是事实声明，代码要能核；只读字幕（mode=meta/full, frames=false）不算。
+ */
+export function framesWatchedFor(bvid, { withinDays = 30, now = Date.now() } = {}) {
+  const id = /^BV[0-9A-Za-z]{10}$/.test(String(bvid ?? '')) ? String(bvid) : ''
+  if (!id) return false
+  let items = []
+  try { items = readWatchHistory({ limit: 500 }).items } catch { return false }
+  const hit = items.find((x) => x.bvid === id)
+  if (!hit || hit.frames !== true) return false
+  const age = now - new Date(hit.at).getTime()
+  return Number.isFinite(age) && age <= withinDays * 86400000
+}

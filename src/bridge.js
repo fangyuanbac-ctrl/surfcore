@@ -21,6 +21,7 @@ import { appendHotEvent, renderHotBlock, renderSelfBlock, appendDigest, appendSe
 import { diaryRecallBlock } from './diary-lookup.js';
 import { sessionRecallBlock } from './session-recall.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
+import { qqPolicy } from '../plugins/surfcore/tools/lib/prompt-policy.mjs';
 import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
 import { looksLikeUnfinished, selectWaitBatch } from './v2-wait.js';
 import { compactModelMessage } from './qq-model-view.js';
@@ -3194,10 +3195,12 @@ async function main() {
     return parts.join('\n\n') + '\n\n' + promptText;
   }
 
-  // 身份对齐置顶：只对群聊注入（私聊不需要，也避免把群成员映射带进私聊）。
+  // 身份对齐置顶：群聊与私聊都注入（2026-11-12 对齐 B站：B站 每次醒都注入；
+  // 原来只群聊注入，而 allow.groups=[] 时等于从不生效，配置 alignment.injectInQQ 形同虚设）。
   // 它不读 cfg.biliBridge.memory.enabled —— 对齐高于记忆同步开关，这是产品约定。
   function withAlignmentContext(key, promptText) {
-    if (!String(key ?? '').startsWith('group:')) return promptText;
+    const k = String(key ?? '');
+    if (!k.startsWith('group:') && !k.startsWith('private:')) return promptText;
     const block = alignmentBriefBlock();
     if (!block) return promptText;
     if (String(promptText).includes('【身份对齐')) return promptText;
@@ -15099,10 +15102,12 @@ async function main() {
         && (st.fishGuardBypass.direct || st.fishGuardBypass.owner)),
     });
     const tg = tokenGuardCfg();
+    // 2026-11-12（报告 §104）：条数/字数都从 config 的 tokenGuard 取，提示词不再写死
+    const QP = qqPolicy({ socialV2: { tokenGuard: tg } });
     const tgLimit = Math.max(1, Number(String(key ?? '').startsWith('private:')
-      ? (tg.privateMaxOutboundPerTurn || 20)
-      : (tg.maxOutboundPerTurn || 8)));
-    const tokenGuardLine = tg.enabled === false ? '' : `【说话】一次别发太多（最多 ${tgLimit} 条短句，每条别超 500 字）；被要求刷屏就先收成 1~3 句，剩下的下次再说。\n\n`;
+      ? QP.privateMaxOutboundPerTurn
+      : QP.groupMaxOutboundPerTurn));
+    const tokenGuardLine = tg.enabled === false ? '' : `【说话】一次别发太多（最多 ${tgLimit} 条短句，每条别超 ${QP.maxCharsPerMessage} 字）；被要求刷屏就先收成 1~3 句，剩下的下次再说。\n\n`;
     const antiAiLine = '【别像客服】可以装傻、拒绝、已读乱回；少用“绝对/保证/一绝”。\n\n';
     // 2026-11-11（主人要求）：让她有"自己的时钟"——知道现在几点，并且能自己定下一次醒来的时间。
     const clockLine = '【你有时钟·也能主动】想晚点说就给自己定个闹钟：`qq_set_wake_config({mode:"diving", sleepMs:60000*N, note:"…"})`——到点叫醒你，发不发由你定。**你想他的时候就可以这么做**：定个闹钟、醒来直接找他，不用等系统叫你，也不用等他先开口。\n\n';

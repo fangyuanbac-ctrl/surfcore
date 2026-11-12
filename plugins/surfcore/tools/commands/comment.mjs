@@ -32,6 +32,7 @@ import {
 } from '../lib/fish-guard.mjs'
 import { myDynamicKinds } from "../lib/my-dynamics.mjs"
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
+import { framesWatchedFor } from '../lib/watch-history.mjs'
 import { findByParent as findAttack, setStatus as setAttackStatus } from '../lib/attacks.mjs'
 
 // ── 限额闸（B 档「限额自主」的代码强制部分，2026-10-14 主人选 B 档）────────────────
@@ -189,6 +190,24 @@ if (IS_REPLY && !SHARE) {
   if (stripped !== before) {
     message = stripped
     console.log(`  [去句号] 楼中楼结尾的句号已去掉（${[...before].length} → ${[...message].length} 字）`)
+  }
+}
+
+// 2026-11-12（报告 §103）：真抽帧闸 —— 「看过/看完了」是事实声明，不能只靠提示词自觉。
+//   观看历史里这个 BV 最近一次没有截图（frames=false，只读了字幕）→ 直接拒；--dry 也拦。
+//   否定句（没看过/还没看完/不看完）不拦。
+{
+  const claim = /(?<!没|不|未)(?:看完了?|看过了?)/u.test(String(message ?? ''))
+  if (claim) {
+    if (!bvid) {
+      console.error('【真抽帧闸】这条评论声称「看过/看完」，但没有 --bvid，无法核对观看历史 → 拒绝（先 debrief 再评论）')
+      process.exit(3)
+    }
+    if (!framesWatchedFor(bvid)) {
+      console.error(`【真抽帧闸】${bvid} 的观看历史里最近一次没有截图（只读了字幕）→ 不许说「看过/看完」`)
+      console.error('  正确说法：「只看了字幕」；要真看画面先 `debrief <BV>`（长视频加 --range）再发')
+      process.exit(3)
+    }
   }
 }
 
