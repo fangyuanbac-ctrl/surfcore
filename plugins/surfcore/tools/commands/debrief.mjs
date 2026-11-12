@@ -1,6 +1,7 @@
 // 「看懂视频」一条龙：封面 + 简介 + 官方字幕 + 弹幕热区 + 热评 + 画面抽帧，六路齐出。
 //
-// 用法: node debrief.mjs <BV> [--bucket 30] [--top 5] [--grid 3x3] [--no-frames] [--substrip 每N秒] [--comments 8]
+// 用法: node debrief.mjs <BV> [--bucket 30] [--top 5] [--grid 3x3] [--no-frames] [--substrip 每N秒] [--comments 8] [--range 起-止]
+//   长视频（≥20 分钟）默认不再下载整片，直接对直链远程抽帧；--range 600-1200 只看 10:00~20:00。
 // 产出: 终端摘要 + 封面图 + 字幕 TXT + 弹幕对齐表 + 九宫格/字幕带（后三者交给 read_image / 模型合成）
 //
 // 设计（2026-10-14，主人定义为「看懂视频」大模块）：
@@ -229,12 +230,13 @@ if (!opt['no-frames']) {
     // 让 bili-watch 知道“这次由 debrief 统一记账”，避免同一次观看写两条历史。
     const out = execFileSync(process.execPath, [
       watch, bvid, GRID,
+      ...(opt.range ? ['--range', String(opt.range)] : []),
       ...(opt.substrip || opt['keep-mp4'] ? ['--keep-mp4'] : []),
     ], {
       encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, SURFCORE_WATCH_PARENT: 'debrief', SURFCORE_WATCH_SOURCE: 'debrief' },
     })
-    for (const line of out.split('\n')) if (/^(SHEET|SUBS|实际画质|取帧方式)/.test(line)) console.log(line)
+    for (const line of out.split('\n')) if (/^(SHEET|SUBS|实际画质|取帧方式|时间点|只看一段|⚠️|（远程抽帧|（长视频)/.test(line)) console.log(line)
     sheet = (out.split('\n').find((l) => l.startsWith('SHEET:')) || '').slice(6).trim() || null
     watchRecord.frames = Boolean(sheet)
     watchRecord.sheet = sheet || ''

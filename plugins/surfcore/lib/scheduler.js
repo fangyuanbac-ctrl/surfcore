@@ -33,7 +33,9 @@ import {
 } from './paths.js'
 import { resolvePersonaFile } from './persona.js'
 import { makeEntry, addEntry, pendingEntries } from './share-queue.mjs'
-import { appendHotEvent, renderHotBlock, renderSelfBlock, renderDigestBlock } from '../../../src/shared-memory.js'
+import { readOwnerTaste, refreshOwnerTaste } from './owner-taste.mjs'
+import { buildBiliSlangPromptBlock } from './bili-slang.js'
+import { appendHotEvent, appendDigest, renderHotBlock, renderSelfBlock, renderDigestBlock } from '../../../src/shared-memory.js'
 import { readUnified } from './store.js'
 import { memoryCardPromptBlock } from './memory-card.js'
 import { buildSelfIdentityBlock, readQqSelfIdentity } from '../../../src/self-identity.js'
@@ -358,6 +360,25 @@ function pendingShareLines() {
   } catch { return [] }
 }
 
+function ownerTasteLines(dir) {
+  const taste = readOwnerTaste(dir)
+  const head = taste
+    ? `【主人的 B站】他的号已经扫码登在这台机器上（不用再登录）：${taste}。`
+    : '【主人的 B站】他的号已经扫码登在这台机器上（不用再登录）：想看就 `prefs scan --target owner --sources history,favorites,following --limit 8` 只读扫一次。'
+  return [
+    head,
+    '  只读，不点赞、不关注、不改他账号；别每轮都扫，他问起或你想接话时再看。',
+    '',
+  ]
+}
+
+function biliSlangWakeLines(dir) {
+  try {
+    const block = buildBiliSlangPromptBlock(dir, 8)
+    return block ? [block.trimEnd(), ''] : []
+  } catch { return [] }
+}
+
 function wakePrompt(st, tools = '') {
   const L = limitsNow()
   const B = config()
@@ -374,6 +395,8 @@ function wakePrompt(st, tools = '') {
     // 2026-10-20：她的会话 cwd 是**用户主目录**，那里没有 bili.mjs ✗
     //   → 每条提示都带上工具链的绝对路径，别让她满盘找（她真的找过，还超时了 ✗）
     ...(tools ? [`［工具］所有命令都用这一条：\`${tools}\`（下面写 "bili.mjs" 的都指它）—— 别去别处找 ✗`, ''] : []),
+    ...ownerTasteLines(biliDir),
+    ...biliSlangWakeLines(biliDir),
     // 2026-10-20：先告诉她"冷了几天"，再给流程 —— 心情在前，任务在后 ✓
     // 2026-10-20：还没跑过启动测试 → 第一句就提醒主人（很多人卡在"找不到会话/没给权限"）
     ...(() => {
@@ -406,12 +429,18 @@ function wakePrompt(st, tools = '') {
     `2) 读两本日记（\`${path.join(biliDir, 'whale-diary.md')}\` + \`${path.join(biliDir, 'whale-diary-private.md')}\`）`,
     // 2026-10-20：feed 已默认多源（搜索+热门+排行+关注）+ 去播放量偏向 + 偏好命中权重 ✓
     // 2026-10-23：feed 改成按「口味权重」分名额 + 排除观看历史/最近推过的 + 搜索页轮换。
-    '3) `feed` 选题（≤5 条）→ 对这 5 条跑 `debrief --no-frames`',
+    '3) `feed --source search,popular,following` 选题（≤5 条）→ 对这 5 条跑 `debrief --no-frames`',
+    '   （搜索 + 关注 + 热门，但**热门只收 DeepSeek 相关**；榜单/盘点不进候选；口味黑名单另挡一批）',
     '   （按设置页的「口味权重」分配条数、偏好之间轮转；看过的/最近推过的自动排除，**不看播放量** ✓）',
     '   3.2) 如果你发现自己总在看同一类：不要自己改配置文件 —— 让主人去设置页「B站 → 口味权重 / 一键抓取」调低那个词、调高别的。',
     '   3.5) ⭐ 如果 `feed` 没有新内容（全是看过的/候选不够）→ **不要硬重复深读、不要为了凑数**；',
     '        写一段日记或扫一眼消息就按“轻醒”收工，保住这一趟的质量 ✓',
     '4) 挑 2–3 条深读（完整 `debrief`，含抽帧）',
+    // 2026-11-11（主人要求）：长视频不能再“只读字幕就算看过”。技术侧已支持远程抽帧（不下载整片）。
+    '   4.1) ⭐ **长视频（>20 分钟）别只读字幕**：`debrief <BV> --range 600-1200` 只抽 10:00~20:00 这段的画面，约 30 秒出图，read_image 真看完再说；',
+    '        不加 --range 就默认 9 点覆盖整片（50 分钟的教程完全不下载原片，扛得住）',
+    '   4.2) ⚠️ **「看过」的标准**：真抽帧 + read_image 过画面才算看过；只跑了 `subtitles` 或 `debrief --no-frames` = 只读了字幕，',
+    '        **不许说「看过/看完了」**，如实说「只看了字幕」——主人会看观看历史里有没有截图 ✗',
     // 2026-10-20：收藏 ≠ 低配的分享 ✓ 它是「我想留着」（内向），和分享（外向）并列
     '4.5) 深读的那几条里，如果某条「我想留着」→ `fav <BV> --reason "…" --dry` → `--go`',
     '     判据（缺一条就别收 ✗）：① 三个月后还会想点开 ② 说得出为什么留（≥6 字）③ 同类已 ≥2 条要 --better',
@@ -428,14 +457,24 @@ function wakePrompt(st, tools = '') {
     '     `recon <BV>` 拿 aid → `comment --oid <aid> --bvid <BV> --message "…" --auto --dry` → 改成 `--go` → `thread` 复核 ✓',
     '     ⭐ **先看这条视频的高赞评论再想自己怎么写**：`hot <BV> --n 8` —— 看他们怎么说话（多短、怎么起头、',
     '        有没有标点、是不是一句就完）；学**语感**，不抄内容、也不抄人家句子 ✗',
+    '     ⚠️ **这一步是强制的**：不跑 `hot` 不写评论；看完挑 2~3 条高赞，学它的长度/标点/接梗方式，再用你自己的话写（像人，不是像 AI 总结）',
     '     ⭐ **像人说话**：一条一般 8~30 字，想到什么说什么；也可以只回两三个字（「草」「懂了」「这个确实」「笑死」「？？」）；',
     '        别每条都「先接梗 → 再观点 → 再总结」，也别每条都点时间点/插件名（那是汇报，不是聊天）✗',
     '     ⭐ **标点**：正文结尾不要句号；句中优先逗号、空格或直接断开，别写成一整段书面语 ✗',
+    '     ⚠️ **代码硬检查**：套话（学到了/做得很好/期待下期…）、纯夸奖没细节、超 40 字 → 直接拒；别用 --force 绕，重写成接梗/吐槽 ✗',
     `     ⚠️ **鱼群泛滥时默认强制聚拢**（当前设置：${B.fishGuard?.forceGather === false ? '关；要强制就加 --force-gather' : '开'}）：就算没有“回复少/新鲜/没回过”的鱼楼，也强行挑一条鱼楼回；`,
     '        **不许拿“没有可聚拢鱼楼”当理由不发**。设置页「鱼群保护 → 每次醒来强制聚拢」默认开；仍占主动评论额度 ✓',
     '     ⚠️ **不带 --share 才是普通评论**；带 --share 才是"分享给我"（那条才要评分 + rank 1 + @ 我 ✓）',
     '     ⚠️ 分寸：**代码硬上限** 一天 ' + capText(L.daily) + ' 条 · 任意两条隔 ' + L.globalMin + ' 分钟 · 同一 UP ' + L.perUpMin + ' 分钟 1 条 · 同一视频 ' + L.perVideoMin + ' 分钟 1 条（这三条只管顶层评论；回复/搭话另算）',
     '        （额度/冷却满了就停，别硬刷；这不是“强制”能绕过的 ✓）',
+    // 2026-11-11（主人定）：**B站黑话也要学** —— 弹幕/热评里的梗、缩写、圈内说法
+    '4.75) ⭐ **学B站黑话**（主人定的）：刷视频/看热评/看弹幕时遇到不认识的梗、缩写、圈内说法 → 先 `slang query "词"` 查自己学没学过；',
+    '     没学过就 `slang add "词" --meaning "你猜的意思" --usage "什么时候用" --source "<BV>/热评"` 记成 candidate（**别马上拿去用，用错更人机** ✗）',
+    '     同一个词第二次在不同地方见到 → `slang confirm "词"`；已确认的（`slang list`）写评论/搭话时可以自然用，不确定就查，别硬套 ✗',
+    // 2026-11-12（主人定）：被动规则没跑起来（一天 0 条），改成硬要求——刷了就至少记 1 个
+    '4.76) ⚠️ **每次醒来至少记 1 个黑话（2026-11-12 主人定的硬规则）**：只要这一轮刷了视频、看了热评或弹幕，就必须 `slang add` 记下至少 1 个不认识的词（candidate），',
+    '     `--source "<BV>/热评"` 写清楚出处；记之前先 `slang list --status candidate` 扫一眼，同一轮别记重复词 ✗',
+    '     ⚠️ 这一轮真的没刷视频/只看已看过的（比如只回私信）可以记 0 —— 但**不许硬编词凑数**（用错比不会更人机 ✗）',
     // 2026-10-20（用户定）：**热评也能搭话** —— 挂在别人评论下面的楼中楼，不是顶层 ✓
     '4.8) ⭐ **搭话**：`hot <BV> --n 8` 或 `debrief` 的热评里，有人说到你心坎里 / 有明显错漏 / 想接个梗 → 回他一句：',
     '     `comment --oid <aid> --bvid <BV> --root <rpid> --parent <rpid> --message "…" --auto --ta --dry` → `--go`',
@@ -454,8 +493,10 @@ function wakePrompt(st, tools = '') {
     ...(String(B.dynamics?.via ?? 'dynamic') === 'dm' ? [
       '4.9) ⭐ **记分**：深读过的每条都记一下 `score <BV> --score N --reason "…"`（0~20 分，没到 13 也记 ✓）',
       '4.95) ⭐ **看片总结 → 只私信主人**（主人定的规矩：不发公开动态 ✗、不发评论/弹幕、不用 daily / share-dynamic）：',
-      '     今天深读过的视频里挑一条最想说的（best 就用今天评分最高的那条），写 50~200 字总结（你的口吻：吐槽/安利/想起什么）',
-      '     → `dm --msg "<总结> 视频：https://www.bilibili.com/video/<BV>/ " --go`（收信人写死是主人，不会发错人）',
+      '     今天深读过的视频里挑一条最想说的（best 就用今天评分最高的那条）——像给熟人发一句分享，不是写观后感：',
+      '     20~80 字，先说看完最直接的感觉/吐槽，再一句这是啥；**不要复述视频结构、排名、数据、时长、评论区战况**，不要列点、不要「总结一下」的腔调 ✗',
+      '     例：「刚看完一个新番评分排行，权重吵翻天了 反正我不服这个第一」——短、有情绪、像人 ✓',
+      '     → `dm --msg "<那句分享> 视频：https://www.bilibili.com/video/<BV>/ " --go`（收信人写死是主人，不会发错人）',
       '     ⚠️ 一天最多 4 条总结（早/午/晚/游戏各一条就够），同一类只发一次，别刷屏 ✗',
       '     ⚠️ 挑不出来就不发（日记里写"今天没有值得说的"），别硬凑 ✗',
     ] : [
@@ -837,6 +878,8 @@ export function startScheduler(ctx, opts) {
     if (!ctx.sessionController) return           // 服务还没就绪 → 下一 tick 再来
     if (peakBlockedNow('生物钟叫醒')) return
     if (await budgetBlockedNow('生物钟叫醒')) return
+    // 2026-11-11：主人 B站 口味缓存（只读；缓存过期才扫，失败不影响主流程）
+    void refreshOwnerTaste(platformDir()).catch(() => {})
     // 2026-10-23：每个 tick 都校正一次权限（会话可能在别处被切回 workspace-write）。
     ensurePermission('tick')
     const st = readState()
@@ -1026,10 +1069,40 @@ export function startScheduler(ctx, opts) {
           : [{ mid: j.mid, name: j.name, text: j.text, ts: j.ts }]
         if (!items.length) return
         // 2026-11-11：主人的 B站 私信进跨平台热层（QQ 她下次醒来能看到"刚才在B站聊了什么"）
+        const ownerDmItems = []
         for (const it of items) {
           if (String(it.mid) === ownerMid && it.text) {
             try { appendHotEvent({ platform: 'bili', who: 'owner', text: it.text }) } catch {}
+            ownerDmItems.push(it)
           }
+        }
+        // 2026-11-11：热层只有 15 分钟 TTL，QQ 过一会儿再问就“不知道”；
+        // 这里落一份持久的「主人 B站 私信」小文件并进跨天摘要，QQ 那边随时能带出来。
+        if (ownerDmItems.length) {
+          try {
+            const f = path.join(platformDir(), 'bili-owner-dm.json')
+            let arr = []
+            try { arr = JSON.parse(fs.readFileSync(f, 'utf8')) } catch {}
+            if (!Array.isArray(arr)) arr = []
+            for (const it of ownerDmItems) {
+              const text = String(it.text ?? '').slice(0, 300)
+              arr.push({
+                at: new Date().toISOString(),
+                mid: String(it.mid),
+                name: it.name || '',
+                text,
+                bv: (text.match(/\bBV[0-9A-Za-z]{10}\b/) ?? [])[0] ?? '',
+              })
+            }
+            fs.writeFileSync(f, JSON.stringify(arr.slice(-20), null, 1))
+            const last = arr[arr.length - 1]
+            try {
+              appendDigest({
+                platform: 'bili',
+                gist: `B站私信：${last.text.slice(0, 80)}${last.bv ? `（视频 ${last.bv}）` : ''}`,
+              })
+            } catch {}
+          } catch {}
         }
         // 2026-11-11（主人要求）：分享的视频「看了就行，不用急着回」；而且要比自己刷到的有区分度。
         // 做法：叫醒她认真看完（subtitles/debrief），排进 dm-share-pending.json；
@@ -1043,7 +1116,7 @@ export function startScheduler(ctx, opts) {
           if (bv) shareList.push({ bv, text, name: it.name })
           if (!mine) return `· ${who} 说：${text}\n  → 回：\`dm --to ${it.mid} --msg "…" --dry\` → \`--go\`（≤200 字 · 一人一天 3 条 · 一天共 12 条 · **只能回不能主动发** ✓）`
           if (!bv) return `· 主人 ${who} 说：${text}\n  → 直接回：\`dm --msg "…" --go\` ✓（不用审核）；而且要比平时更温柔：先回应关心、再答内容，不杠不顶嘴`
-          return `· 主人 ${who} 发来一个视频：${text}\n  → 这是**他专门发给你看的**（不是你自己刷到的）。先看：\`${TOOL_CMD} subtitles ${bv}\`；想看画面再 \`${TOOL_CMD} debrief ${bv}\`\n  → ⭐ **看完先别回**：他不需要你快回，别秒回「看了」。想法先记着，等会儿我会再叫你回`
+          return `· 主人 ${who} 发来一个视频：${text}\n  → 这是**他专门发给你看的**（不是你自己刷到的）。先看：\`${TOOL_CMD} subtitles ${bv}\`；画面必看：\`${TOOL_CMD} debrief ${bv}\`（长视频加 \`--range 600-1200\` 抽一段，约 30 秒，别只看字幕）\n  → ⭐ **看完先别回**：他不需要你快回，别秒回「看了」。想法先记着，等会儿我会再叫你回`
         })
         if (shareList.length) {
           let q = readShareQueue()
@@ -1066,7 +1139,7 @@ export function startScheduler(ctx, opts) {
               "",
               ...(shareList.length ? [
                 "按 AGENTS.md「私信」做（不要等我说话，直接做）：",
-                "1) **里面有主人发来的视频**：认真看完（先 `subtitles`，要看画面再 `debrief`）——不是交差，是你自己想知道它讲什么。",
+                "1) **里面有主人发来的视频**：认真看完（先 `subtitles`，画面必看 `debrief`；长视频加 `--range 起-止` 只抽一段）——不是交差，是你自己想知道它讲什么。**只读了字幕就别说「看过」**。",
                 "2) ⭐ **不用急着回**：什么时候想说了再说；不想回也可以。回不回、回什么、什么时候回，你自己定。",
                 "3) 真要回的时候，别写成看片总结、别贴链接；说你自己的看法（哪句戳到你、哪里一般），让他听得出你认真看了他发的那条。",
                 "4) 其余普通私信照老规矩：主人 → 直接回、更温柔；其他人 → 只回不主动；吵架/要隐私/广告 → 不回。",

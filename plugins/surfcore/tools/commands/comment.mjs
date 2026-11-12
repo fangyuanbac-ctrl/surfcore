@@ -348,6 +348,28 @@ if (FISH_GATHER) {
   console.log('  [额度] 这条聚拢回复占**主动评论额度**（不是回复额度）；别人再回这层楼才占回复额度 ✓')
 }
 
+// ── 人机味检查（2026-11-11 主人要求）：公开评论要像人，套话/纯夸奖/书面长句直接拒 ──
+{
+  const raw = String(message ?? '')
+  const issues = []
+  const plain = raw.replace(/[\s，,。！!？?～~、…“”"'‘’（）()【】\[\]]/g, '')
+  const PHRASES = ['学到了', '受益匪浅', '做得很好', '做得不错', '质量很高', '质量很好', '期待下一期', '期待下期', '感谢分享', '谢谢分享', '感谢up', '感谢UP', 'up主辛苦', 'UP主辛苦', '总体来说', '总的来说', '不得不说', '这个视频真不错', '非常不错', '支持一下', '给你点赞', '内容很充实']
+  const hit = PHRASES.find((p) => plain.toLowerCase().includes(p.toLowerCase()))
+  if (hit) issues.push(`套话「${hit}」`)
+  const len = [...raw].length
+  const maxLen = SHARE ? 120 : 40
+  if (len > maxLen) issues.push(`太长（${len} 字，公开评论建议 ≤${maxLen}）`)
+  if ([...plain].length <= 14 && /^(这|那)?(个|条|期)?(视频|内容|评论|up|UP)?(真|太|很|非常)?(不错|好|棒|厉害|优秀|喜欢|支持|学到了|谢谢|感谢|辛苦|加油|期待)(了|啊|呀|吧|哦|呢)?$/.test(plain)) {
+    issues.push('纯夸奖、没具体细节')
+  }
+  if (issues.length && !args.has('force')) {
+    console.error(`\n❌ 人机味检查没过：${issues.join('；')}`)
+    console.error('   改成接梗/吐槽/具体细节（提视频里的某个点），别用套话；确实要发才加 --force')
+    process.exit(9)
+  }
+  if (issues.length) console.log(`\n⚠️ 人机味检查没过，但带 --force：${issues.join('；')}`)
+}
+
 const params = { type, oid: String(oid), message, plat: '1', csrf: String(cred.bili_jct) }
 if (root) params.root = String(root)
 if (parent) params.parent = String(parent)

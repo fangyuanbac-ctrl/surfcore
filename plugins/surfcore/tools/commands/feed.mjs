@@ -43,6 +43,9 @@ const PER = Math.max(1, Math.min(N, Number(opt.per ?? Math.max(2, Math.ceil(N / 
 const PAGES = Math.max(1, Math.min(3, Number(opt.pages ?? 3) || 3))
 const RECENT_DAYS = Math.max(0, Math.min(30, Number(opt['recent-days'] ?? 3) || 0))
 const SOURCE = String(opt.source ?? 'all')
+// 2026-11-11：支持逗号组合（如 search,following），方便避开热门/排行源里跟口味不搭的榜单盘点
+const SOURCES = new Set(SOURCE.split(/[,，]/).map((s) => s.trim()).filter(Boolean))
+const hasSource = (name) => SOURCES.has('all') || SOURCES.has(name)
 const SEED = String(opt.seed ?? new Date().toLocaleDateString('sv-SE'))
 const REMEMBER = opt['no-remember'] !== true
 
@@ -153,14 +156,14 @@ async function fetchPopular() {
   const j = await (await fetch(`https://api.bilibili.com/x/web-interface/popular?pn=${popularPage}&ps=20`, { headers: H })).json()
   for (const it of (j?.data?.list ?? [])) {
     pool.push({ bv: String(it.bvid ?? ''), t: String(it.title ?? '').replace(/<[^>]+>/g, ''), d: Number(it.duration ?? 0),
-      dm: toNum(it.stat?.danmaku), play: toNum(it.stat?.view), up: String(it.owner?.name ?? ''), kw: '热门' })
+      dm: toNum(it.stat?.danmaku), play: toNum(it.stat?.view), up: String(it.owner?.name ?? ''), kw: '热门', src: 'popular' })
   }
 }
 async function fetchRank() {
   const j = await (await fetch('https://api.bilibili.com/x/web-interface/ranking/v2?rid=0&type=all', { headers: H })).json()
   for (const it of (j?.data?.list ?? []).slice(0, 20)) {
     pool.push({ bv: String(it.bvid ?? ''), t: String(it.title ?? '').replace(/<[^>]+>/g, ''), d: Number(it.duration ?? 0),
-      dm: toNum(it.stat?.danmaku), play: toNum(it.stat?.view), up: String(it.owner?.name ?? ''), kw: '排行' })
+      dm: toNum(it.stat?.danmaku), play: toNum(it.stat?.view), up: String(it.owner?.name ?? ''), kw: '排行', src: 'rank' })
   }
 }
 // 关注的人发了什么（2026-10-18 加）：真人才会"刷关注"——只搜关键词等于只刷"搜索"，不像人
@@ -176,10 +179,26 @@ async function fetchFollowing() {
       dm: 0, play: toNum(ar.stat?.play), up: String(a?.name ?? ''), kw: '关注' })
   }
 }
-try { if (['popular', 'all'].includes(SOURCE)) await fetchPopular() } catch { console.error('（热门源取不到，跳过）') }
-try { if (['rank', 'all'].includes(SOURCE)) await fetchRank() } catch { console.error('（排行源取不到，跳过）') }
-try { if (['following', 'all'].includes(SOURCE)) await fetchFollowing() } catch (e) { console.error(`（关注源取不到，跳过：${String(e.message).slice(0, 60)}）`) }
-console.error(`[来源] ${SOURCE === 'all' ? '搜索 + 热门 + 排行 + 关注' : SOURCE === 'popular' ? '热门' : SOURCE === 'rank' ? '排行' : SOURCE === 'following' ? '关注' : '搜索'}`)
+try { if (hasSource('popular')) await fetchPopular() } catch { console.error('（热门源取不到，跳过）') }
+try { if (hasSource('rank')) await fetchRank() } catch { console.error('（排行源取不到，跳过）') }
+try { if (hasSource('following')) await fetchFollowing() } catch (e) { console.error(`（关注源取不到，跳过：${String(e.message).slice(0, 60)}）`) }
+console.error(`[来源] ${SOURCE === 'all' ? '搜索 + 热门 + 排行 + 关注' : SOURCE}`)
+
+// 2026-11-11：热门/排行源只留「DeepSeek 相关」（主人要求），其他来源不受影响
+const hotFilter = (Array.isArray(cfg.preferences?.hotFilter) ? cfg.preferences.hotFilter : [])
+  .map((w) => String(w ?? '').trim().toLowerCase())
+  .filter(Boolean)
+if (hotFilter.length) {
+  let hotKept = 0
+  let hotDropped = 0
+  for (let i = pool.length - 1; i >= 0; i -= 1) {
+    const x = pool[i]
+    if (x.src !== 'popular' && x.src !== 'rank') continue
+    if (hotFilter.some((w) => String(x.t ?? '').toLowerCase().includes(w))) hotKept += 1
+    else { pool.splice(i, 1); hotDropped += 1 }
+  }
+  if (hotKept || hotDropped) console.error(`[热门] 只留 DeepSeek 相关：保留 ${hotKept} / 丢弃 ${hotDropped}`)
+}
 
 // ── ④ 反馈回流（2026-10-20 加）────────────────────────────────────────────
 //   feedback.json 里 kind='like' 的事件带 videoTitle → 对被赞视频【标题相似】的候选加权
@@ -215,10 +234,26 @@ const boostOf = (title) => Math.min(7.5, learnedHitsOf(title) * 2.5)
 
 // ── ⑤ 过滤 + 打分 + 按权重分配名额 ────────────────────────────────────────
 const selfName = String(cfg.self?.name ?? '')
+// 2026-11-11：口味黑名单（preferences.avoid）——命中标题就不进候选（如排行榜/盘点）
+const avoidWords = (Array.isArray(cfg.preferences?.avoid) ? cfg.preferences.avoid : [])
+  .map((w) => String(w ?? '').trim().toLowerCase())
+  .filter(Boolean)
+// 2026-11-11：鱼塘/刷量候选——播放低但弹幕暴涨（机器人刷评论的常见特征），不进候选
+let fishDropped = 0
+const isFishy = (x) => {
+  const play = safeNumber(x.play)
+  const dm = safeNumber(x.dm)
+  const fishy = play < 100 || (play < 5000 && dm > play * 0.5) || dm > Math.max(play, 1) * 2
+  if (fishy) fishDropped += 1
+  return fishy
+}
 const uniq = [...new Map(pool.map((x) => [x.bv, x])).values()]
   .filter((x) => x.bv)
   .filter((x) => !seen.has(x.bv) && !likedBVs.has(x.bv) && !favBVs.has(x.bv))
   .filter((x) => !(selfName && String(x.up ?? '').includes(selfName)))
+  .filter((x) => !avoidWords.some((w) => String(x.t ?? '').toLowerCase().includes(w)))
+  .filter((x) => !isFishy(x))
+if (fishDropped) console.error(`[鱼塘] 播放低/弹幕异常的候选已跳过 ${fishDropped} 条`)
 
 const recentFiltered = filterRecentlyPicked(uniq, pickMap, { now: Date.now(), days: RECENT_DAYS })
 const candidates = recentFiltered.map((x) => {
