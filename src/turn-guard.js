@@ -104,9 +104,20 @@ export function createTurnGuard(options = {}) {
     return stop(state, 'TURN_BUDGET_EXHAUSTED', '回合进行中每日额度已耗尽', { hits });
   }
 
+  /**
+   * 真人又在本轮里说话了 → 这是连续对话，不是失控循环：步数归零。
+   * 2026-11-11 主人反馈：凌晨连续聊天时被「单轮工具步数超过 40」掐断，
+   * 排查发现是 send→wait(5min)→send 的连续对话被当成了 runaway。
+   */
+  function noteInbound(sessionId) {
+    const state = turns.get(sessionId);
+    if (!state || state.stopped) return;
+    state.steps = 0;
+  }
+
   function end(sessionId) {
     turns.delete(sessionId);
   }
 
-  return { begin, get, noteStep, noteToolError, noteBudgetExhausted, end, config: { maxSteps, maxRepeatedErrors } };
+  return { begin, get, noteStep, noteInbound, noteToolError, noteBudgetExhausted, end, config: { maxSteps, maxRepeatedErrors } };
 }

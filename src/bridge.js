@@ -18,6 +18,8 @@ import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
 import { appendHotEvent, renderHotBlock, renderSelfBlock, appendDigest, appendSelfNote, renderDigestBlock } from './shared-memory.js';
+import { diaryRecallBlock } from './diary-lookup.js';
+import { sessionRecallBlock } from './session-recall.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
 import { SENSITIVE_RE, SECRET_TOKEN_RE } from './sensitive.js';
 import { looksLikeUnfinished, selectWaitBatch } from './v2-wait.js';
@@ -1055,6 +1057,9 @@ function loadConfig() {
         // 重启补唤醒最多叫醒几个会话。默认从 5 降到 3：backlog 冷启动最贵，
         // 先处理最积压的 3 个，其余留到下一轮/自然唤醒，不一次开五个冷会话。
         backlogMaxSessions: 3,
+        // 2026-11-11（主人要求）：积压太少时别打扰——只在未读 ≥ N 条时才补唤醒；
+        // 少于 N 条的留在未读里，等你下一条消息/自然醒时一起带出来。
+        backlogMinUnread: 3,
         maxWakeConfigReminders: 2
       },
       send: {
@@ -1091,6 +1096,7 @@ function loadConfig() {
         directBypassDay: true,        // @/叫名字/提问/拍一拍 也不受每日自动唤醒次数限制
         replyCheckFree: true,         // 回复后回访不占每日次数（仍受间隔/限频/花费约束）
         maxOutboundPerTurn: 8,       // 一次醒来最多发 8 条（burst/单发/表情/拍一拍/语音都算）
+        privateMaxOutboundPerTurn: 20, // 跟主人私聊时放宽到 20 条（群聊仍按 8）
         maxDailyCostCNY: 8,          // 近 24h 全局花费上限；0 = 不限
         perGroupEnabled: false,      // 每会话额度（按群/按私聊单独计当日花费）
         perGroupDailyCostCNY: 0,     // 每会话每日上限；0 = 不限
@@ -3780,8 +3786,34 @@ async function main() {
     markReadCalledKeys.delete(key);
   }
 
-  function retireSession(key) {
-    const sessionId = state.sessions[key];
+  /**
+   * 工作区只留最新会话（2026-11-11 主人要求）：新建会话后把同目录下旧会话归档。
+   * 只动「不在映射里 + 不在跑 + 2 分钟前」的会话，防止误伤并发新建/正在用的会话。
+   */
+  async function pruneWorkspaceSessions(dir, keepSessionId) {
+    try {
+      const list = unwrap(await withTimeout(api.sessions.list({}), DSH_CONTROL_TIMEOUT_MS, 'sessions.list'), 'session.list');
+      const normDir = path.normalize(String(dir ?? '').replace(/\//g, path.sep)).toLowerCase();
+      const active = new Set(Object.values(state.sessions ?? {}).map((v) => String(v)));
+      const items = (list.items ?? []).filter((item) => {
+        const sid = String(item?.sessionId ?? '');
+        if (!sid || sid === keepSessionId || active.has(sid)) return false;
+        if (item?.running === true) return false;
+        const cwd = path.normalize(String(item?.cwd ?? '').replace(/\//g, path.sep)).toLowerCase();
+        if (cwd !== normDir) return false;
+        const updated = Number(item?.updatedAt ?? 0);
+        return !(updated && Date.now() - updated < 2 * 60 * 1000);
+      });
+      for (const item of items) {
+        const sid = String(item.sessionId);
+        try { await withTimeout(api.stopSessionWork(sid), DSH_CONTROL_TIMEOUT_MS, 'stopSessionWork'); } catch {}
+        try { await withTimeout(api.workspace.archiveSession({ sessionId: sid }), DSH_CONTROL_TIMEOUT_MS, 'archiveSession'); } catch {}
+      }
+      if (items.length) log(`[prune] ${path.basename(normDir)} 归档 ${items.length} 条旧会话`);
+    } catch {}
+  }
+
+  function retireSession(key) {    const sessionId = state.sessions[key];
     delete state.sessions[key];
     delete state.sessionPolicies[key];
     // 按 key 记账的内存态在**有映射和无映射时都要清**：一条被移出白名单、
@@ -4194,9 +4226,13 @@ async function main() {
           isAllowed: (key) => isSessionAllowedInCurrentMode(key),
         });
         // 限量：默认最多 3 个会话（按未读条数降序），避免重启后一次性叫醒几十个群、白烧 token。
-        // 从 5 降到 3 的依据：Phase 1A 样本里 backlog 是最贵的唤醒类型（冷启动）。
         const cap = Math.max(1, Math.min(20, Number(cfg.socialV2?.wake?.backlogMaxSessions) || 3));
-        const backlog = all.sort((a, b) => b.unread - a.unread).slice(0, cap);
+        // 积压太少不打扰（2026-11-11 主人要求）：未读 < N 条就留着，等真实消息/自然醒一起带出
+        const minUnread = Math.max(1, Math.min(50, Number(cfg.socialV2?.wake?.backlogMinUnread) || 3));
+        const eligible = all.filter((item) => Number(item.unread) >= minUnread);
+        const below = all.length - eligible.length;
+        const backlog = eligible.sort((a, b) => b.unread - a.unread).slice(0, cap);
+        if (below) log(`[reserved2] 启动补唤醒：${below} 个会话积压 < ${minUnread} 条，先不叫醒（留未读）`);
         if (all.length > backlog.length) log(`[reserved2] 启动补唤醒：共 ${all.length} 个会话有积压，本次只补前 ${backlog.length} 个`);
         for (const item of backlog) {
           log(`[reserved2] 启动补唤醒 ${item.key}（${trigger}）：积压 ${item.unread} 条未读`);
@@ -4463,6 +4499,32 @@ async function main() {
     const configuredToken = String(cfg.consoleToken ?? '').trim();
     const tokenValid = configuredToken.length >= 16 && configuredToken.length <= 128 && /^[A-Za-z0-9_-]+$/.test(configuredToken);
     let consoleToken = tokenValid ? configuredToken : loadOrCreateConsoleToken();
+    // 2026-11-12（报告 §95）：设置页「生成控制台令牌」（插件层 saveQqConfig）只改 config.json，
+    // 不会通知运行中的桥接；而 MCP（mcp-snowluma-safe）每次请求都重新读 config.json。
+    // 于是桥接内存里还是旧令牌、MCP 已送新令牌 → 所有 qq_* 工具 401「请提供控制台访问令牌」。
+    // 这里在每次鉴权前比对 config.json / state/console-token 的 mtime，变了就热加载。
+    const consoleTokenSignature = () => {
+      const parts = [];
+      for (const f of [path.join(ROOT, 'config.json'), path.join(STATE_DIR, 'console-token')]) {
+        try { parts.push(`${f}:${fs.statSync(f).mtimeMs}`); } catch { parts.push(`${f}:0`); }
+      }
+      return parts.join('|');
+    };
+    let consoleTokenSig = consoleTokenSignature();
+    const reloadConsoleTokenIfChanged = () => {
+      const sig = consoleTokenSignature();
+      if (sig === consoleTokenSig) return;
+      consoleTokenSig = sig;
+      const fileCfg = readConfigObject(path.join(ROOT, 'config.json'));
+      const nextConfigured = String(fileCfg.consoleToken ?? '').trim();
+      const nextValid = nextConfigured.length >= 16 && nextConfigured.length <= 128 && /^[A-Za-z0-9_-]+$/.test(nextConfigured);
+      const next = nextValid ? nextConfigured : loadOrCreateConsoleToken();
+      if (next && next !== consoleToken) {
+        consoleToken = next;
+        cfg.consoleToken = nextValid ? nextConfigured : '';
+        log('控制台：检测到 config.json / state 令牌变化，已热加载新令牌（不记录完整值）');
+      }
+    };
     // 令牌必须非空才继续。下面鉴权处原来的写法是「令牌为空 ⇒ return true（放行）」，
     // 注释写着"启动时已自动生成并持久化"—— 等于承认那一行不可达，可它是一条**失败开放**的分支：
     // 一旦真的空了（写盘异常被吞、以后新增"关闭鉴权"之类的配置），控制台上那些
@@ -4618,6 +4680,9 @@ async function main() {
         return;
       }
       // 控制台鉴权：所有请求需带 x-console-token 或 ?token=
+      // 2026-11-12：先热加载可能被外部（插件设置页 / 手改 config.json）更换的令牌，
+      // 否则桥接内存与 MCP 读到的文件令牌不一致，会让整轮工具调用 401（报告 §95）。
+      reloadConsoleTokenIfChanged();
       // 定长比较：`!==` 会在第一个不同的字符处短路，理论上可被本机进程用响应时延逐字节试探。
       // 令牌是 192 bit 随机值且只监听回环，所以这是纵深防御而非在野漏洞。
       const suppliedToken = String(url.searchParams.get('token') ?? req.headers['x-console-token'] ?? '');
@@ -5843,6 +5908,7 @@ async function main() {
           cfg.consoleToken = generated ? '' : newToken;
           atomicWriteText(path.join(STATE_DIR, 'console-token'), newToken);
           consoleToken = newToken;
+          consoleTokenSig = consoleTokenSignature();
           log(`控制台：访问令牌已${generated ? '重新生成' : '手动修改'}（不记录完整值）`);
           sendJson({ ok: true, token: newToken, generated });
           return;
@@ -6183,7 +6249,7 @@ async function main() {
             merged.tokenGuard = { ...(current.tokenGuard ?? {}), ...body.tokenGuard };
             if (merged.tokenGuard.enabled !== undefined) merged.tokenGuard.enabled = merged.tokenGuard.enabled === true;
             if (merged.tokenGuard.directBypassGap !== undefined) merged.tokenGuard.directBypassGap = merged.tokenGuard.directBypassGap === true;
-            for (const k of ['maxWakesPerDay', 'privateMaxWakesPerDay', 'minWakeGapMs', 'maxOutboundPerTurn', 'maxDailyCostCNY']) {
+            for (const k of ['maxWakesPerDay', 'privateMaxWakesPerDay', 'minWakeGapMs', 'maxOutboundPerTurn', 'privateMaxOutboundPerTurn', 'maxDailyCostCNY']) {
               if (merged.tokenGuard[k] !== undefined) {
                 const n = Number(merged.tokenGuard[k]);
                 merged.tokenGuard[k] = Number.isFinite(n) ? Math.max(0, n) : current.tokenGuard?.[k] ?? 0;
@@ -10906,6 +10972,8 @@ async function main() {
         throw new Error('会话创建期间已重置或权限已变化');
       }
       log(`新会话 ${key} -> ${sessionId}（模式 ${currentMode}，preset: ${modePreset(key, currentMode, cfg) ?? '默认'}）`);
+      // 2026-11-11：该工作区只留这一条最新会话，旧会话异步归档（不阻塞本轮）
+      void pruneWorkspaceSessions(dir, sessionId);
       return sessionId;
     })();
     sessionPromises.set(key, promise);
@@ -11263,6 +11331,7 @@ async function main() {
             sessionTokens: Number(val.sessionTokens) || 0,
             sessionBaseTokens: Number(val.sessionBaseTokens) || 0,
             handoffPending: String(val.handoffPending ?? ''),
+            fullPromptSession: String(val.fullPromptSession ?? ''),
             rolloverPending: val.rolloverPending === true,
             rolling: false,
             wakeTimes: Array.isArray(val.wakeTimes) ? val.wakeTimes : [],
@@ -11400,6 +11469,9 @@ async function main() {
           sessionTokens: Number(st.sessionTokens) || 0,
           sessionBaseTokens: Number(st.sessionBaseTokens) || 0,
           handoffPending: String(st.handoffPending ?? ''),
+          // 2026-11-11：标识「这个 DSH 会话已经给过全量提示词」，跨重启保留，
+          // 否则每次桥接重启后的第一次唤醒又发全量（7~8k 字符）。
+          fullPromptSession: String(st.fullPromptSession ?? ''),
           rolloverPending: st.rolloverPending === true,
           // rolling 是内存防重入，不持久化；加载时固定 false，避免崩溃后永远卡住。
           wakeTimes: st.wakeTimes.slice(-200),
@@ -11982,10 +12054,16 @@ async function main() {
   function tokenGuardSendBlock(key, st, count = 1) {
     const g = tokenGuardCfg();
     if (g.enabled === false) return null;
-    const r = evaluateOutbound({ used: Number(st?.tokenTurnSent) || 0, count, guard: g });
+    const r = evaluateOutbound({
+      used: Number(st?.tokenTurnSent) || 0,
+      count,
+      guard: g,
+      private: String(key ?? '').startsWith('private:'),
+    });
     if (r.blocked) {
+      const limit = r.max;
       const block = { error: r.error, reason: 'outbound', code: 'TOKEN_GUARD_SEND_LIMIT', setting: 'socialV2.tokenGuard.maxOutboundPerTurn', hint: '去 QQ → 高级设置 → Token 防爆破 → 调整每次醒来最多发送条数。' };
-      reportLimitEvent(key, { ...block, ok: false, path: 'QQ → 高级设置 → Token 防爆破', current: Number(st?.tokenTurnSent) || 0, limit: g.maxOutboundPerTurn });
+      reportLimitEvent(key, { ...block, ok: false, path: 'QQ → 高级设置 → Token 防爆破', current: Number(st?.tokenTurnSent) || 0, limit });
       return block;
     }
     // 先占额度：即使后续网络失败也不放开，防止失败重试刷 token。
@@ -13251,7 +13329,26 @@ async function main() {
       const vectorBlock = typeof opts.vectorBlock === 'string'
         ? opts.vectorBlock
         : await vectorRecallBlockForWake(key).catch(() => '');
-      promptText = buildWakePromptV2(key, opts.wakeReason, vectorBlock);
+      // 2026-11-11（主人定）：一个会话里第一次醒来给全量提示词（人设/记忆卡/规则），
+      // 之后只发“变了的东西”（时间/未读/近况/摘要/待回）；细节在日记/记忆卡里找。
+      // 人不会每句话前重申自己是谁；重复出现的是“重要的近况”，不是整张人格卡。
+      const promptState = getSocialV2State(key);
+      const fullForSession = promptState.fullPromptSession !== sessionId;
+      promptText = fullForSession
+        ? buildWakePromptV2(key, opts.wakeReason, vectorBlock)
+        : buildIncrementalWakePromptV2(key, opts.wakeReason);
+      if (fullForSession) {
+        promptState.fullPromptSession = sessionId;
+        saveSocialV2State();
+      }
+      // 主人问到「昨天/那天/某月某日」时，替她翻日记和那天的聊天摘要（只在这一轮注入）
+      const diaryBlock = diaryRecallForWake(key);
+      if (diaryBlock) promptText += diaryBlock;
+      // 2026-11-11：B站 主人私信（≤72h）在 QQ 也带一句——否则“B站分享给你了，QQ 问她还不知道”
+      if (String(key ?? '').startsWith('private:')) {
+        const dmLine = biliOwnerDmLine();
+        if (dmLine) promptText += dmLine;
+      }
       wakeSnapshot = buildWakeSnapshotV2(key);
       if (wakeSnapshot) {
         promptText += `\n\n【本次消息快照】\n${JSON.stringify(wakeSnapshot)}\n以上消息已提供，无需重复查询；partial=true 时用 qq_get_context_snapshot(afterSeq=readThroughSeq, include=["unread"]) 继续读取。先处理当前消息；回复前如需确认后续补充，用 qq_wait_for_messages(purpose="reply") 补足短静默，已安静够久会立即返回，不要先长等。收尾只确认你已处理的 readThroughSeq（本地 seq，非 QQ messageId），传给 qq_mark_read 或 qq_set_wake_config 的 throughSeq；新到消息留待处理。`;
@@ -15002,7 +15099,10 @@ async function main() {
         && (st.fishGuardBypass.direct || st.fishGuardBypass.owner)),
     });
     const tg = tokenGuardCfg();
-    const tokenGuardLine = tg.enabled === false ? '' : `【说话】一次别发太多（最多 ${Math.max(1, Number(tg.maxOutboundPerTurn) || 8)} 条短句，每条别超 500 字）；被要求刷屏就先收成 1~3 句，剩下的下次再说。\n\n`;
+    const tgLimit = Math.max(1, Number(String(key ?? '').startsWith('private:')
+      ? (tg.privateMaxOutboundPerTurn || 20)
+      : (tg.maxOutboundPerTurn || 8)));
+    const tokenGuardLine = tg.enabled === false ? '' : `【说话】一次别发太多（最多 ${tgLimit} 条短句，每条别超 500 字）；被要求刷屏就先收成 1~3 句，剩下的下次再说。\n\n`;
     const antiAiLine = '【别像客服】可以装傻、拒绝、已读乱回；少用“绝对/保证/一绝”。\n\n';
     // 2026-11-11（主人要求）：让她有"自己的时钟"——知道现在几点，并且能自己定下一次醒来的时间。
     const clockLine = '【你有时钟·也能主动】想晚点说就给自己定个闹钟：`qq_set_wake_config({mode:"diving", sleepMs:60000*N, note:"…"})`——到点叫醒你，发不发由你定。**你想他的时候就可以这么做**：定个闹钟、醒来直接找他，不用等系统叫你，也不用等他先开口。\n\n';
@@ -15065,8 +15165,14 @@ async function main() {
     // 人格卡正文由 personaWakeBlockV2 在最前统一注入（2026-11-01 改：以前只给指针，
     // 模型基本不调 qq_get_prompt，等于不知道自己是谁）；这里仍保证 B 站记忆每轮都在：
     // 否则群友问起「B站那个号」时，它会把自己当成另一个人。
+    const cutText = (text, max) => {
+      const s = String(text ?? '');
+      if (s.length <= max) return s;
+      const cut = s.lastIndexOf('\n', max);
+      return `${cut > max * 0.55 ? s.slice(0, cut) : s.slice(0, max)}…`;
+    };
     const biliBrief = cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
-      ? biliMemory.briefBlock()
+      ? cutText(biliMemory.briefBlock(), 1100)
       : '';
     const biliRecall = lastMsg && cfg.biliBridge?.enabled && cfg.biliBridge?.memory?.enabled !== false
       ? biliMemory.recallBlock(String(lastMsg.text || lastMsg.plain || ''))
@@ -15077,9 +15183,18 @@ async function main() {
     // 叙事侧必须带 key：dev 的按会话记忆隔离靠 memoryCardPromptBlock(key)。
     const memoryCardText = memoryMode() === 'vector' ? String(vectorBlock || '').trim() : memoryCardPromptBlock(key);
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
+    // 2026-11-11：主人的 B站 口味（只读缓存，B站 侧刷新）——QQ 侧也能自然说出来，不误答「要登录/风控」
+    const ownerBiliTaste = (() => {
+      try {
+        if (!CHARACTER_ID) return '';
+        const raw = JSON.parse(fs.readFileSync(path.join(characterPaths(CHARACTER_ID).biliDir, 'owner-taste.json'), 'utf8'));
+        if (!raw?.line || Date.now() - Number(raw.at ?? 0) > 24 * 3600 * 1000) return '';
+        return `【主人的 B站】他爱看：${raw.line}。\n  这是你 B站 那边只读翻到的；QQ 这边没有 B站 工具，别去撞网页接口（会报风控校验失败）。他问细节就说「我回头去 B站 那边翻翻」，或者先问他最近在刷什么。\n\n`;
+      } catch { return ''; }
+    })();
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + hotLine + selfLine + digestLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + ownerBiliTaste + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + hotLine + selfLine + digestLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -15135,6 +15250,75 @@ async function main() {
       return `${base}【唤醒】${key}\n原因：有人拍了一拍（可能拍了你，也可能拍了别人）。\n先看未读/最近消息里的 [拍一拍] 事件：如果是拍你，可以自然回应一句，也可以用 qq_send_poke 回一个拍一拍；如果是拍别人，觉得有趣也可以接梗。除了回应，偶尔也可以主动戳一下正在聊的人/熟人，像真人手贱/提醒/逗一下，但别频繁。不想接就安静收尾（qq_mark_read 或 qq_set_wake_config）。`;
     }
     return `${base}【唤醒】${key}\n原因：${WAKE_REASON_TEXT[String(reason ?? '').split(':')[0]] ?? reason}\n先看未读，判断谁找你、该不该说话；没话就安静收尾（qq_close_conversation）。\n【引用】只在指向的不是最新一条、或几句指代不同消息时，才用 replyToMessageId 指向那条。\n要潜水前先按【睡前观察】等够窗口。`;
+  }
+
+  /**
+   * 会话内续聊的「轻提示」（2026-11-11 主人定）：
+   * 一个会话第一次醒来已经给过全量人格卡/记忆卡/规则；同一个会话里再醒，只补“变了的东西”：
+   * 现在几点、未读、另一边刚才聊了什么、跨天摘要、为什么醒、怎么收尾。
+   * 人不会每句话前重申自己是谁；细节可以在日记/记忆卡里找，重复出现的是近况而不是整张卡。
+   */
+  function diaryRecallForWake(key) {
+    try {
+      if (!CHARACTER_ID) return '';
+      const st = getSocialV2State(key) ?? {};
+      const msgs = [...(st.recentMessages ?? []), ...(st.unread ?? [])]
+        .filter((m) => m && !m.isSelf)
+        .slice(-3);
+      const text = msgs.map((m) => String(m.text || m.plain || '')).join(' ');
+      if (!text) return '';
+      const dirs = [
+        path.join(STATE_DIR, 'agents'),
+        path.join(process.env.DSH_HOME || path.join(process.env.USERPROFILE || '', '.dsh'), 'surfcore', 'state', 'bili-agents'),
+      ];
+      const diary = diaryRecallBlock({ dir: characterPaths(CHARACTER_ID).biliDir, text });
+      const chat = sessionRecallBlock({ dirs, text });
+      const block = [diary, chat].filter(Boolean).join('');
+      return block.length > 2600 ? `${block.slice(0, 2600)}…\n\n` : block;
+    } catch { return ''; }
+  }
+
+  /** B站 主人私信的最新一条（≤72h）→ QQ 提示里带一句，避免“B站分享过、QQ 不知道” */
+  function biliOwnerDmLine() {
+    try {
+      if (!CHARACTER_ID) return '';
+      const file = path.join(characterPaths(CHARACTER_ID).biliDir, 'bili-owner-dm.json');
+      const arr = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (!Array.isArray(arr) || !arr.length) return '';
+      const last = arr[arr.length - 1];
+      const at = Date.parse(String(last.at ?? ''));
+      if (!Number.isFinite(at) || Date.now() - at > 72 * 3600 * 1000) return '';
+      const rel = Math.max(0, Math.round((Date.now() - at) / 60000));
+      const when = rel < 60 ? `${rel} 分钟前` : `${Math.round(rel / 60)} 小时前`;
+      const bv = last.bv ? `（视频 ${last.bv}）` : '';
+      return `【B站 私信】${when} 主人在 B站 私信你：${String(last.text ?? '').slice(0, 120)}${bv}。这是他发给你的（不是你自己刷到的）；在 QQ 被问起时可以说你知道这回事，细节去 B站那边看/回。\n\n`;
+    } catch { return ''; }
+  }
+
+  function buildIncrementalWakePromptV2(key, reason) {
+    const st = getSocialV2State(key) ?? {};
+    const now = new Date();
+    const clock = now.toLocaleString('zh-CN', {
+      hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    });
+    const hot = renderHotBlock({ platform: 'qq' });
+    const self = renderSelfBlock({ maxChars: 200 });
+    const digest = renderDigestBlock({});
+    const unread = Array.isArray(st.unread) ? st.unread.length : 0;
+    const reasonKey = String(reason ?? '').split(':')[0];
+    const why = WAKE_REASON_TEXT[reasonKey] ?? String(reason ?? '');
+    return [
+      '【续】接着刚才的聊，不用重新自我介绍、也不用把规则再说一遍（会话开头已经给过）。',
+      `【现在】${clock}`,
+      `【会话令牌】${st.agentToken ?? ''}`,
+      `【此刻】未读 ${unread} 条`,
+      hot,
+      self,
+      digest,
+      why ? `【为什么醒】${why}` : '',
+      '【收尾】要睡就先 qq_wait_for_messages(timeoutMs=300000) 观察；没话要说就用 qq_close_conversation。',
+      '',
+    ].filter(Boolean).join('\n\n') + '\n';
   }
 
   function buildWakeReminderPromptV2(key) {
@@ -16137,6 +16321,18 @@ async function main() {
       log(`[黑名单] 忽略 ${key} 来自 ${event.user_id} 的消息（deny.users）`);
       return;
     }
+    // 2026-11-11：真人还在说话 → 连续对话不算失控，回合步数归零（别把聊天掐断）
+    try {
+      const sid = state.sessions[key];
+      if (sid) turnGuard.noteInbound(sid);
+      // 同一条消息也意味着进入新的“回复预算”：清掉上一轮的发送计数，
+      // 否则连续聊天时一轮 20 条也照样会顶满，她再发就报“调用失败”。
+      const stIn = getSocialV2State(key);
+      if (stIn && Number(stIn.tokenTurnSent) !== 0) {
+        stIn.tokenTurnSent = 0;
+        saveSocialV2State();
+      }
+    } catch {}
     const resolveAtName = async (qq) => {
       // 只有群聊才需要把 @QQ号 解析成群名片/昵称；私聊没有群成员概念
       if (kind !== 'group') return null;

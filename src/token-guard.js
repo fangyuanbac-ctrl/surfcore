@@ -15,6 +15,8 @@ export const DEFAULT_TOKEN_GUARD = Object.freeze({
   // @ / 叫名字 / 提问 / 拍一拍 也不受每日自动唤醒次数限制（2026-10-31 用户要求）
   directBypassDay: true,
   maxOutboundPerTurn: 8,
+  // 2026-11-11 主人要求：跟主人私聊时可以多发几句（群聊/自动发言仍按 8）
+  privateMaxOutboundPerTurn: 20,
   maxDailyCostCNY: 8,
   // 回复后回访是同一段对话的收尾，不再占每日次数（2026-11-03 用户反馈：私聊 10 次只够 5 轮）。
   // 仍受最小间隔、每分钟/每小时限频和每日花费上限约束。
@@ -118,9 +120,9 @@ export function evaluateWakeBudget({
  * 发送前条数检查（一次醒来内累计）。
  * @returns {{blocked:boolean, next:number, max:number, error?:string}}
  */
-export function evaluateOutbound({ used = 0, count = 1, guard = DEFAULT_TOKEN_GUARD } = {}) {
+export function evaluateOutbound({ used = 0, count = 1, guard = DEFAULT_TOKEN_GUARD, private: isPrivate = false } = {}) {
   const g = { ...DEFAULT_TOKEN_GUARD, ...(guard && typeof guard === 'object' ? guard : {}) };
-  const max = Math.max(1, Math.round(num(g.maxOutboundPerTurn, 8)));
+  const max = Math.max(1, Math.round(num(isPrivate ? g.privateMaxOutboundPerTurn : g.maxOutboundPerTurn, isPrivate ? 20 : 8)));
   const n = Math.max(1, Math.round(num(count, 1)));
   const before = Math.max(0, Math.round(num(used, 0)));
   const next = before + n;
