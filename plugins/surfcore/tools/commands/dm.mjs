@@ -19,6 +19,7 @@ import { execFileSync } from 'node:child_process'
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
+import { displayPolicy } from '../lib/prompt-policy.mjs'
 import { assertInteractEnabled } from '../lib/interact.mjs'
 import { gate, record } from '../lib/quota-gate.mjs'
 import { appendHotEvent } from '../../../../src/shared-memory.js'
@@ -144,9 +145,9 @@ if (!MSG) { console.error('用法: node dm.mjs --msg "…" [--share --target BV�
 if (TO && TO !== OWNER) {
   // 2026-10-20 管理员改：每人每天 3 条（原来是"24 小时 1 条"）
   //   2026-10-21：总量从 12 再放宽到 **30**（总量必须 ≥ 每人上限，否则"每人 3 条"用不满）
-  const STRANGER_DAILY = 30        // 一天所有陌生人加起来
-  const PER_PERSON_DAILY = 3       // 同一个人一天最多 3 条
-  const MAX_LEN = 200
+  const STRANGER_DAILY = displayPolicy.dmReplyDaily        // 一天所有陌生人加起来
+  const PER_PERSON_DAILY = displayPolicy.dmReplyPerPersonDaily  // 同一个人一天最多几条
+  const MAX_LEN = displayPolicy.dmReplyMaxChars
   if (TO === '0' || Number(TO) < 1000) { console.error('✗ 这个 mid 不像真人（系统/官方号不回复）'); process.exit(2) }
   if (MSG.length > MAX_LEN) { console.error(`✗ 回陌生人的私信太长（${MSG.length} > ${MAX_LEN} 字）—— 一两句就够 ✗`); process.exit(2) }
   const meInfo0 = await me()

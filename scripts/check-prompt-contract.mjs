@@ -15,7 +15,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { biliPolicy, qqPolicy } from '../plugins/surfcore/tools/lib/prompt-policy.mjs'
+import { biliPolicy, qqPolicy, displayPolicy } from '../plugins/surfcore/tools/lib/prompt-policy.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repo = path.resolve(here, '..')
@@ -119,14 +119,22 @@ check('honesty-rule-present', '「没抽帧不能说看过」在代码闸与规�
 })
 
 // 8. scheduler 提示词里的 B站 数字必须来自 biliPolicy，不再出现字面量
-check('bili-prompt-uses-policy', 'scheduler 的收藏/鱼赞/总结数字来自 prompt-policy', () => {
-  const need = ['P.favDaily', 'P.fishLikeDaily', 'P.fishLikePerRun', 'P.dmSummaryDaily', '.quietShareDaily']
+check('bili-prompt-uses-policy', 'scheduler 的收藏/鱼赞/总结/字数数字来自 prompt-policy', () => {
+  const need = ['P.favDaily', 'P.fishLikeDaily', 'P.fishLikePerRun', 'P.dmSummaryDaily', '.quietShareDaily',
+    'P.replyCharsMin', 'P.publicCommentMaxChars', 'P.dmShareCharsMin', 'P.dmReplyDaily']
   const miss = need.filter((s) => !S.scheduler.includes(s))
   if (miss.length) return { ok: false, detail: `缺插值：${miss.join(', ')}` }
   const literals = [
     /一天最多\s*\d+\s*条/,
     /每天最多\s*\d+\s*个/,
     /每天最多\s*\d+\s*个\s*·\s*每次最多\s*\d+\s*个/,
+    /一条一般\s*\d+~\d+\s*字/,
+    /\b\d+~\d+\s*字，先说看完/,
+    /一天共\s*\d+\s*条/,
+    /超\s*\d+\s*字\s*→\s*直接拒/,
+    /同一视频\s*\d+\s*天一次/,
+    /理由\s*≥\d+\s*字/,
+    /≥\d+\s*字\s*\/\s*每天上限/,
   ]
   const hit = literals.filter((re) => re.test(S.scheduler)).map((re) => String(re))
   return hit.length ? { ok: false, detail: `仍有字面量：${hit.join(' / ')}` } : true
@@ -153,6 +161,23 @@ check('token-guard-chars-matches-config', 'QQ 提示词「每条别超 N 字」�
   if (qqPolicy(cfg).maxCharsPerMessage !== Number(n)) return { ok: false, detail: 'qqPolicy 与 config 不一致' }
   if (!S.bridge.includes('QP.maxCharsPerMessage')) return { ok: false, detail: 'bridge.js 没插值 QP.maxCharsPerMessage' }
   return true
+})
+
+// 11. 展示性常量（评论/私信长度、陌生人私信上限、收藏判据）由 displayPolicy 单一提供
+check('display-policy-single-source', 'comment/dm/fav 的闸门数字来自 displayPolicy / biliPolicy', () => {
+  const comment = read(path.join(repo, 'plugins/surfcore/tools/commands/comment.mjs'))
+  const dm = read(path.join(repo, 'plugins/surfcore/tools/commands/dm.mjs'))
+  const fav = read(path.join(repo, 'plugins/surfcore/tools/commands/fav.mjs'))
+  const problems = []
+  if (!comment.includes('displayPolicy.shareCommentMaxChars') || !comment.includes('displayPolicy.publicCommentMaxChars')) problems.push('comment.mjs 没导入 displayPolicy 的评论长度')
+  if (/SHARE \? 120 : 40/.test(comment)) problems.push('comment.mjs 仍有 SHARE ? 120 : 40')
+  if (!dm.includes('displayPolicy.dmReplyDaily') || !dm.includes('displayPolicy.dmReplyPerPersonDaily')) problems.push('dm.mjs 没导入 displayPolicy 的陌生人上限')
+  if (/const STRANGER_DAILY = 30/.test(dm) || /const PER_PERSON_DAILY = 3/.test(dm) || /const MAX_LEN = 200/.test(dm)) problems.push('dm.mjs 仍有写死的陌生人上限')
+  if (!fav.includes('displayPolicy.favReasonMinChars') || !fav.includes('displayPolicy.favRepeatDays') || !fav.includes('biliPolicy(cfg).favDaily')) problems.push('fav.mjs 没走 displayPolicy / biliPolicy')
+  if (/todayCount >= 3/.test(fav) || /length < 6/.test(fav) || /days < 30\)/.test(fav)) problems.push('fav.mjs 仍有写死的收藏判据')
+  const D = displayPolicy
+  if (D.dmReplyDaily < D.dmReplyPerPersonDaily) problems.push(`dmReplyDaily(${D.dmReplyDaily}) < 每人上限(${D.dmReplyPerPersonDaily})，额度用不满`)
+  return problems.length ? { ok: false, detail: problems.join('; ') } : true
 })
 
 const failed = results.filter((r) => !r.ok)

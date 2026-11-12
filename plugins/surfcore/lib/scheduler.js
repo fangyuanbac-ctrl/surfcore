@@ -447,8 +447,8 @@ function wakePrompt(st, tools = '') {
     '        **不许说「看过/看完了」**，如实说「只看了字幕」——主人会看观看历史里有没有截图 ✗',
     // 2026-10-20：收藏 ≠ 低配的分享 ✓ 它是「我想留着」（内向），和分享（外向）并列
     '4.5) 深读的那几条里，如果某条「我想留着」→ `fav <BV> --reason "…" --dry` → `--go`',
-    '     判据（缺一条就别收 ✗）：① 三个月后还会想点开 ② 说得出为什么留（≥6 字）③ 同类已 ≥2 条要 --better',
-    '     ⚠️ 一天最多 ' + P.favDaily + ' 条 · 同一视频 30 天一次 · **收藏不占分享额度** ✓ 但它会成为你下次选题的口味信号 ✓',
+    `     判据（缺一条就别收 ✗）：① 三个月后还会想点开 ② 说得出为什么留（≥${P.favReasonMinChars} 字）③ 同类已 ≥2 条要 --better`,
+    '     ⚠️ 一天最多 ' + P.favDaily + ' 条 · 同一视频 ' + P.favRepeatDays + ' 天一次 · **收藏不占分享额度** ✓ 但它会成为你下次选题的口味信号 ✓',
     '     ⚠️ 「好看但看完就完」的不收 ✗ —— 收藏夹要密度不要数量 ✓',
     // 2026-10-23（用户定）：**给鱼点赞要能独立发生**，不要只绑在“发评论”后面。
     '4.6) ⭐ **给鱼点赞**（看完后独立做，不是每条都点）：深读的 BV 里评论多的，跑 `fish-guard like --bvid <BV> --dry` 看目标 → 去掉 `--dry` 真点',
@@ -462,10 +462,10 @@ function wakePrompt(st, tools = '') {
     '     ⭐ **先看这条视频的高赞评论再想自己怎么写**：`hot <BV> --n 8` —— 看他们怎么说话（多短、怎么起头、',
     '        有没有标点、是不是一句就完）；学**语感**，不抄内容、也不抄人家句子 ✗',
     '     ⚠️ **想发评论时**：先跑 `hot` 看高赞再动笔（不想发就跳过）；挑 2~3 条高赞，学它的长度/标点/接梗方式，再用你自己的话写（像人，不是像 AI 总结）',
-    '     ⭐ **像人说话**：一条一般 8~30 字，想到什么说什么；也可以只回两三个字（「草」「懂了」「这个确实」「笑死」「？？」）；',
+    `     ⭐ **像人说话**：一条一般 ${P.replyCharsMin}~${P.replyCharsMax} 字，想到什么说什么；也可以只回两三个字（「草」「懂了」「这个确实」「笑死」「？？」）；`,
     '        别每条都「先接梗 → 再观点 → 再总结」，也别每条都点时间点/插件名（那是汇报，不是聊天）✗',
     '     ⭐ **标点**：正文结尾不要句号；句中优先逗号、空格或直接断开，别写成一整段书面语 ✗',
-    '     ⚠️ **代码硬检查**：套话（学到了/做得很好/期待下期…）、纯夸奖没细节、超 40 字 → 直接拒；别用 --force 绕，重写成接梗/吐槽 ✗',
+    `     ⚠️ **代码硬检查**：套话（学到了/做得很好/期待下期…）、纯夸奖没细节、超 ${P.publicCommentMaxChars} 字 → 直接拒；别用 --force 绕，重写成接梗/吐槽 ✗`,
     `     ⚠️ **想回鱼楼时**看鱼群保护（当前设置：${B.fishGuard?.forceGather === false ? '关；要强制就加 --force-gather' : '开'}）：优先挑“回复少/新鲜/没回过”的鱼楼；没有合适的就不回，不用硬找 ✓`,
     '        （设置页「鱼群保护 → 每次醒来强制聚拢」默认开；强制只在这一步“想回但挑不出合适的”时生效）',
     '     ⚠️ **不带 --share 才是普通评论**；带 --share 才是"分享给我"（那条才要评分 + rank 1 + @ 我 ✓）',
@@ -498,7 +498,7 @@ function wakePrompt(st, tools = '') {
       '4.9) ⭐ **记分**：深读过的每条都记一下 `score <BV> --score N --reason "…"`（0~20 分，没到 13 也记 ✓）',
       '4.95) ⭐ **看片总结 → 只私信主人**（主人定的规矩：不发公开动态 ✗、不发评论/弹幕、不用 daily / share-dynamic）：',
       '     今天深读过的视频里挑一条最想说的（best 就用今天评分最高的那条）——像给熟人发一句分享，不是写观后感：',
-      '     20~80 字，先说看完最直接的感觉/吐槽，再一句这是啥；**不要复述视频结构、排名、数据、时长、评论区战况**，不要列点、不要「总结一下」的腔调 ✗',
+      `     ${P.dmShareCharsMin}~${P.dmShareCharsMax} 字，先说看完最直接的感觉/吐槽，再一句这是啥；**不要复述视频结构、排名、数据、时长、评论区战况**，不要列点、不要「总结一下」的腔调 ✗`,
       '     例：「刚看完一个新番评分排行，权重吵翻天了 反正我不服这个第一」——短、有情绪、像人 ✓',
       '     → `dm --msg "<那句分享> 视频：https://www.bilibili.com/video/<BV>/ " --go`（收信人写死是主人，不会发错人）',
       '     ⚠️ 一天最多 ' + P.dmSummaryDaily + ' 条总结（' + P.dmSummaryLabels + '各一条就够），同一类只发一次，别刷屏 ✗',
@@ -527,7 +527,7 @@ function wakePrompt(st, tools = '') {
     '     打完分之后才用：`engage <BV> --dry` → 看它这次准备做什么，满意再 `--go`（没打过分的视频别互动 ✗）',
     '     · 分数越高越可能往上走：点赞 → 投币 → 收藏；也可能掷到"什么都不做"——这是正常结果，别硬凑 ✗',
     `     · **投币不可撤回**（一次 1 个币，每天最多 ${B.engage?.coinDaily ?? 3} 个）—— 只有真喜欢的才投`,
-    '     · 收藏还要过收藏判据（理由 ≥6 字 / 每天上限 / 30 天不重复），过不了就算了，别改理由硬收 ✗',
+    `     · 收藏还要过收藏判据（理由 ≥${P.favReasonMinChars} 字 / 每天上限 / ${P.favRepeatDays} 天不重复），过不了就算了，别改理由硬收 ✗`,
     `     · 额度：点赞 ${B.engage?.likeDaily ?? 8}/天 · 投币 ${B.engage?.coinDaily ?? 3}/天 · 收藏 ${B.engage?.favDaily ?? 2}/天 · 两次互动至少隔 ${B.engage?.minGapMin ?? 5} 分钟 · 沉默逛时一律不做`,
     // 2026-10-21（用户定）：**全局回复规则** —— 疑似被攻击/阴阳怪气一律不接，记账等审
     '4.995) ⭐⭐ **遇到攻击 / 阴阳怪气 → 一个字都别回，记待审**：',
@@ -540,9 +540,9 @@ function wakePrompt(st, tools = '') {
     '   · via=dynamic：`share-dynamic --bvid <BV> --text "<分享内容>" --score <N> --reason "<为什么值得分享>" --dry` → `--go`',
     '     - 会找这条视频已有的 AV 动态并**转发**：新动态 = 你的话 + **可点视频卡片**（找不到卡片会拒绝；`--allow-text` 才退“文字+链接”）',
     `     - 和四类动态**共用间隔**：任意两条 ≥${B.dynamics?.gapMin ?? 30} 分钟（命令会查 daily-dynamic.json，不够就拒 ✓）`,
-    '     - 占用分享额度（≤shareDaily/天 · 同一视频 7 天一次），发完写 daily-dynamic.json 并报备 ✓',
+    `     - 占用分享额度（≤${P.shareDaily}/天 · 同一视频 ${P.shareRepeatDays} 天一次），发完写 daily-dynamic.json 并报备 ✓`,
     '   · via=dm：**不发公开评论** ✗ → dm --msg "<分享内容> 视频：https://www.bilibili.com/video/<BV>/ " **--share --target BV…** --go ✓',
-    `     ⚠️ 必须带 --share：与评论区 @ 共用同一本额度账（≤${B.quota?.shareDaily ?? 3}/天 · 同一视频 7 天一次）；不带就只是推送 ✗`,
+    `     ⚠️ 必须带 --share：与评论区 @ 共用同一本额度账（≤${P.shareDaily}/天 · 同一视频 ${P.shareRepeatDays} 天一次）；不带就只是推送 ✗`,
     '     ⚠️ 必须带视频链接：链接里的 BV 就是「同一视频」的判重依据 ✓',
     '   · via=comment：comment --share --auto --reason … --score … --rank 1（旧功能，仍可用 ✓）',
     '6) 写两本日记（散文体 + 表格 ✓ 私人那本写「偏好校准」）',
@@ -1055,6 +1055,7 @@ export function startScheduler(ctx, opts) {
       let cfg
       try { cfg = JSON.parse(fs.readFileSync(CFG_FILE_REF, "utf8")) } catch { cfg = {} }
       const L = cfg.listen ?? {}
+      const P = biliPolicy(cfg)
       if (!L.dm) return
       if (Date.now() - lastDmAt < 5_000) return   // 2026-10-19：原来 60s 和定时器叠成双层节流 → 最坏 2 分钟 ✗ 改成 5s
       lastDmAt = Date.now()
@@ -1118,7 +1119,7 @@ export function startScheduler(ctx, opts) {
           const text = String(it.text ?? "").slice(0, 300)
           const bv = mine ? ((text.match(/\bBV[0-9A-Za-z]{10}\b/) ?? [])[0] ?? "") : ""
           if (bv) shareList.push({ bv, text, name: it.name })
-          if (!mine) return `· ${who} 说：${text}\n  → 回：\`dm --to ${it.mid} --msg "…" --dry\` → \`--go\`（≤200 字 · 一人一天 3 条 · 一天共 12 条 · **只能回不能主动发** ✓）`
+          if (!mine) return `· ${who} 说：${text}\n  → 回：\`dm --to ${it.mid} --msg "…" --dry\` → \`--go\`（≤${P.dmReplyMaxChars} 字 · 一人一天 ${P.dmReplyPerPersonDaily} 条 · 一天共 ${P.dmReplyDaily} 条 · **只能回不能主动发** ✓）`
           if (!bv) return `· 主人 ${who} 说：${text}\n  → 直接回：\`dm --msg "…" --go\` ✓（不用审核）；而且要比平时更温柔：先回应关心、再答内容，不杠不顶嘴`
           return `· 主人 ${who} 发来一个视频：${text}\n  → 这是**他专门发给你看的**（不是你自己刷到的）。先看：\`${TOOL_CMD} subtitles ${bv}\`；画面必看：\`${TOOL_CMD} debrief ${bv}\`（长视频加 \`--range 600-1200\` 抽一段，约 30 秒，别只看字幕）\n  → ⭐ **看完先别回**：他不需要你快回，别秒回「看了」。想法先记着，等会儿我会再叫你回`
         })

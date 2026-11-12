@@ -20,6 +20,7 @@ import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
+import { displayPolicy } from '../lib/prompt-policy.mjs'
 import { assertInteractEnabled, checkCommentAge, printAgeBlock } from '../lib/interact.mjs'
 // 2026-10-20（管理员定）：普通评论的硬闸门 —— 想说话就说话，但别把自己说成刷屏号 ✗
 //   一天 30 条 · 同一 UP 10 分钟 ≤1 · 同一视频 60 分钟 ≤1（默认值在 lib/limits.mjs；
@@ -376,7 +377,7 @@ if (FISH_GATHER) {
   const hit = PHRASES.find((p) => plain.toLowerCase().includes(p.toLowerCase()))
   if (hit) issues.push(`套话「${hit}」`)
   const len = [...raw].length
-  const maxLen = SHARE ? 120 : 40
+  const maxLen = SHARE ? displayPolicy.shareCommentMaxChars : displayPolicy.publicCommentMaxChars
   if (len > maxLen) issues.push(`太长（${len} 字，公开评论建议 ≤${maxLen}）`)
   if ([...plain].length <= 14 && /^(这|那)?(个|条|期)?(视频|内容|评论|up|UP)?(真|太|很|非常)?(不错|好|棒|厉害|优秀|喜欢|支持|学到了|谢谢|感谢|辛苦|加油|期待)(了|啊|呀|吧|哦|呢)?$/.test(plain)) {
     issues.push('纯夸奖、没具体细节')

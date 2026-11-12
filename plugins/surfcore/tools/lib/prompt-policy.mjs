@@ -6,6 +6,33 @@
 //   scheduler.js / bridge.js 的提示词用 `${P.xxx}` 插值，不再出现字面量。
 // 注意：这里只放"可配置的策略数字"；语气、规则编号、行为措辞不在这里。
 
+/**
+ * 展示性/文案常量（2026-11-12 报告 §105）：
+ * 这些数字既出现在提示词里、也出现在脚本闸门里（评论长度、陌生人私信上限），
+ * 以前两边各写一份 → 提示词说「一天共 12 条」、dm.mjs 实际是 30 条，她照着旧数字说。
+ * 现在统一从这里取：提示词用 ${P.xxx}，comment.mjs / dm.mjs 直接 import displayPolicy。
+ */
+export const displayPolicy = {
+  // 说话长度（气质建议，脚本不拦）
+  replyCharsMin: 8,
+  replyCharsMax: 30,
+  // 公开评论硬上限（comment.mjs）
+  publicCommentMaxChars: 40,
+  shareCommentMaxChars: 120,
+  // 看片总结私信（主人）：气质建议
+  dmShareCharsMin: 20,
+  dmShareCharsMax: 80,
+  // 回复陌生人私信（dm.mjs --to 的硬闸）
+  dmReplyMaxChars: 200,
+  dmReplyPerPersonDaily: 3,
+  dmReplyDaily: 30,
+  // 收藏判据（fav.mjs 硬闸）
+  favReasonMinChars: 6,
+  favRepeatDays: 30,
+  // 分享（--share）同一视频判重窗口
+  shareRepeatDays: 7,
+}
+
 /** 从 B站 配置（bili.config.json）算出提示词要用的策略数字。 */
 export function biliPolicy(cfg = {}) {
   const limits = cfg.limits ?? {}
@@ -44,6 +71,8 @@ export function biliPolicy(cfg = {}) {
     dailyComment: Number(limits.daily ?? 1),
     taDaily: Number(limits.taDaily ?? 2),
     replyDaily: Number(limits.replyDaily ?? 3),
+    // 展示性常量（见 displayPolicy；脚本闸门与提示词共用同一份）
+    ...displayPolicy,
   }
 }
 

@@ -12,6 +12,7 @@
 //   ④ 同类（按理由首词）已有 ≥2 条 → 除非 --better 否则拒
 //   ⑤ 先 --dry 再 --go（和其它写操作一致）
 import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { biliPolicy, displayPolicy } from '../lib/prompt-policy.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -93,13 +94,14 @@ async function videoInfo(bv) {
 function checkRules({ bv, reason, better, kind }) {
   const d = load()
   const items = d.items ?? []
-  if (!reason || String(reason).trim().length < 6) return '理由太短（≥6 字）—— 说不清为什么留，就不收 ✗'
+  const favDaily = biliPolicy(cfg).favDaily
+  if (!reason || String(reason).trim().length < displayPolicy.favReasonMinChars) return `理由太短（≥${displayPolicy.favReasonMinChars} 字）—— 说不清为什么留，就不收 ✗`
   const todayCount = items.filter((x) => new Date(x.at).toLocaleDateString('sv-SE') === today()).length
-  if (todayCount >= 3) return `今天已经收了 ${todayCount} 条（上限 3）—— 剩下的明天再说 ✓`
+  if (todayCount >= favDaily) return `今天已经收了 ${todayCount} 条（上限 ${favDaily}）—— 剩下的明天再说 ✓`
   const same = items.find((x) => x.bv === bv)
   if (same) {
     const days = Math.floor((Date.now() - new Date(same.at).getTime()) / DAY)
-    if (days < 30) return `这个 ${days} 天前收过了（30 天内不重复）✓`
+    if (days < displayPolicy.favRepeatDays) return `这个 ${days} 天前收过了（${displayPolicy.favRepeatDays} 天内不重复）✓`
   }
   const k = kind || inferKind(reason)
   const sameKind = items.filter((x) => x.kind === k)
@@ -132,7 +134,7 @@ const fav = await defaultFavId()
 console.log(`[fav] ${bv}  「${info.title.slice(0, 44)}」  @${info.up}`)
 console.log(`  理由：${reason}`)
 console.log(`  类别：${String(opt.kind ?? '') || inferKind(reason)}（可选 --kind 想学|想再看|和我有关|以后要提 覆盖）`)
-console.log(`  收藏夹：「${fav.title}」（media_id=${fav.id}）· 今天第 ${(load().items ?? []).filter((x) => new Date(x.at).toLocaleDateString('sv-SE') === today()).length + 1}/3 条`)
+console.log(`  收藏夹：「${fav.title}」（media_id=${fav.id}）· 今天第 ${(load().items ?? []).filter((x) => new Date(x.at).toLocaleDateString('sv-SE') === today()).length + 1}/${biliPolicy(cfg).favDaily} 条`)
 
 if (!GO && !DRY) { console.error('✗ 必须给 --dry 或 --go'); process.exit(2) }
 if (DRY) { console.log('  [dry] 未写入 ✓ 确认后把 --dry 换成 --go'); process.exit(0) }
