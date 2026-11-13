@@ -177,11 +177,17 @@ export function adminBlockForBili() {
 
 /** QQ → B站 的脱敏记忆（默认关闭；开启后才注入）。 */
 function qqMemoryBlockForBili() {
-  const unified = readUnified().config
-  if (unified.memory?.qqToBili?.enabled !== true) return ''
+  // 2026-11-14（报告 §113）：QQ 私聊的「QQ 那边」摘要（bridge 写、已脱敏），
+  // B站 写日记时参考；不再限于原来的「公开群白名单」同步。
   const text = readTextFile(activeMemoryPaths().qqForBili)
   if (!text) return ''
-  return `［QQ 群里的近况（已脱敏；不含私信/联系方式）］\n${text}`
+  const body = text
+    .split('\n')
+    .filter((line) => line.trim() && !line.startsWith('# ') && !line.startsWith('>'))
+    .join('\n')
+    .slice(0, 1500)
+  if (!body) return ''
+  return `## QQ 那边（最近，来自 QQ 私聊的脱敏摘要，不是原文）\n${body}`
 }
 
 /** 记忆卡（B站侧）：只拿公开冲浪记忆 + 共享锚点，不含 QQ 私事（隐私边界）。 */
@@ -545,7 +551,7 @@ function wakePrompt(st, tools = '') {
     `     ⚠️ 必须带 --share：与评论区 @ 共用同一本额度账（≤${P.shareDaily}/天 · 同一视频 ${P.shareRepeatDays} 天一次）；不带就只是推送 ✗`,
     '     ⚠️ 必须带视频链接：链接里的 BV 就是「同一视频」的判重依据 ✓',
     '   · via=comment：comment --share --auto --reason … --score … --rank 1（旧功能，仍可用 ✓）',
-    '6) 写两本日记（散文体 + 表格 ✓ 私人那本写「偏好校准」）',
+    '6) 写两本日记（散文体 + 表格 ✓ 私人那本写「偏好校准」）；写之前看一眼上面「QQ 那边」——和主人在 QQ 上聊到的事，可以自然写进私人日记（用自己的话，不用照抄摘要）',
     // ⭐ 2026-10-18 主人定：每轮流程**最后**扫一遍"有没有没回的评论" → 有就**一起**推给我 ✓
     '7) ⭐ `comment-digest --hours 24` —— **每轮最后都要扫**：有没回的评论就**一起**推给我（不是一条条报 ✗）',
     '   回不回、怎么回：主人 / 其他人 → 见「倾听」的分两侧规则 ✓',

@@ -18,6 +18,8 @@ import { fileURLToPath } from 'node:url';
 import { SnowLumaWebSocketClient, text } from '@snowluma/sdk';
 import { NodeApiClient, unwrap, createTurnCollector, discoverDshLaunchToken } from './dsh-client.js';
 import { appendHotEvent, renderHotBlock, renderSelfBlock, appendDigest, appendSelfNote, renderDigestBlock } from './shared-memory.js';
+// 2026-11-14（报告 §113）：把 QQ 收尾摘要脱敏成 qq-for-bili.md，给 B站 侧写日记用。
+import { syncQqForBili } from './qq-for-bili.js';
 import { diaryRecallBlock } from './diary-lookup.js';
 import { sessionRecallBlock } from './session-recall.js';
 import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-plain.js';
@@ -3975,6 +3977,7 @@ async function main() {
         try { scheduleMorningGreeting(); } catch (error) { log(`[早安] 排定失败：${error?.message ?? error}`); }
         // 在线时每群每小时最多主动 @ 一次
         try { startProactiveScheduler(); } catch (error) { log(`[搭话] 启动失败：${error?.message ?? error}`); }
+try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败：${error?.message ?? error}`); }
         // 目的机制：定期从近期记忆里提炼目的，主动私聊主人（默认开，可关）。
         if (cfg.purpose?.enabled !== false) {
           try { startPurposeLoop(); } catch (error) { log(`[目的] 启动失败：${error?.message ?? error}`); }
@@ -12294,6 +12297,8 @@ async function main() {
       if (gist) {
         appendDigest({ platform: 'qq', gist, next: String(record.nextOpening ?? '') });
         appendSelfNote({ platform: 'qq', text: `和主人聊到：${gist}` });
+        // 2026-11-14（报告 §113）：收尾摘要同时刷新「QQ 那边」文件，供 B站 写日记参考。
+        try { syncQqForBili(); } catch {}
       }
     } catch {}
     st.lastActionAt = Date.now();
@@ -14130,6 +14135,12 @@ async function main() {
     if (cfg.chat?.proactive?.enabled === false) return;
     setInterval(() => { checkProactiveAt().catch(() => {}); }, 5 * 60 * 1000);
     log(`[搭话] 已启动：每群每小时最多一次主动 @（至少 ${cfg.chat?.proactive?.minMessages ?? 10} 条上下文）`);
+  }
+
+  // 2026-11-14（报告 §113）：定时刷新「QQ 那边」摘要文件，避免长时间没有收尾时文件太旧。
+  function startQqForBiliRefresher() {
+    try { syncQqForBili(); } catch {}
+    setInterval(() => { try { syncQqForBili(); } catch {} }, 30 * 60 * 1000);
   }
 
   // 二代仿真模式专用角色提示：去掉一代的 [SILENT] / 空格分句等状态机指令，避免与工具协议冲突。
