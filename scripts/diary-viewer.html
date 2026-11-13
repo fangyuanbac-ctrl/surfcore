@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>鲸眠的日记 · SurfCore</title>
+<style>
+  :root {
+    --bg: #0f1218; --panel: #161b24; --panel-2: #1d2430; --line: #2a3342;
+    --text: #dbe3ee; --muted: #8b98ab; --accent: #7fb7ff; --accent-2: #ffd479;
+    --chip: #223044; --mark: #5a4a12;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.65 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    overflow-x: hidden; }
+  a { color: var(--accent); }
+  header { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(8px);
+    background: rgba(15,18,24,.88); border-bottom: 1px solid var(--line); padding: 14px 20px 10px; }
+  .title-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .tabs { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .tab { border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+    padding: 5px 12px; border-radius: 999px; cursor: pointer; font-size: 13px; }
+  .tab:hover { color: var(--text); border-color: #3a475c; }
+  .tab.active { background: var(--chip); color: var(--text); border-color: var(--accent); }
+  .tab .n { color: var(--muted); font-size: 11px; margin-left: 5px; }
+  html { overflow-x: hidden; }
+  main { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 16px;
+    padding: 18px 44px 60px 20px; max-width: 100%; margin: 0 auto; }
+  aside { position: sticky; top: 118px; align-self: start; max-height: calc(100vh - 130px); overflow: auto; }
+  .search { width: 100%; margin-bottom: 10px; background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; outline: none; font-size: 13px; }
+  .search:focus { border-color: var(--accent); }
+  .day { display: flex; justify-content: space-between; gap: 8px; padding: 5px 8px; border-radius: 7px;
+    cursor: pointer; color: var(--muted); font-size: 13px; }
+  .day:hover { background: var(--panel); color: var(--text); }
+  .day.active { background: var(--chip); color: var(--text); }
+  .day .c { color: var(--muted); font-size: 11px; }
+  section#content { min-width: 0; overflow-wrap: anywhere; }
+  .day-head { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 12px;
+    padding-bottom: 8px; border-bottom: 1px dashed var(--line); color: var(--muted); font-size: 13px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 16px; margin-bottom: 14px; min-width: 0; overflow-wrap: anywhere; }
+  .body { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+  .body table.pipe { display: block; overflow-x: auto; width: 100%; }
+  .body pre { max-width: 100%; }
+  .card.private { border-left: 3px solid var(--accent-2); }
+  .card.public { border-left: 3px solid var(--accent); }
+  .card.digest { border-left: 3px solid #86e0b0; }
+  .meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .chip { background: var(--chip); color: var(--muted); font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+  .chip.private { color: var(--accent-2); }
+  .chip.public { color: var(--accent); }
+  .chip.digest { color: #86e0b0; }
+  .time { color: var(--muted); font-size: 12px; }
+  .card h2 { font-size: 15px; margin: 0 0 8px; }
+  .body p { margin: 0 0 9px; }
+  .body ul { margin: 0 0 9px; padding-left: 20px; }
+  .body li { margin: 2px 0; }
+  .body blockquote { margin: 0 0 9px; padding: 2px 0 2px 12px; border-left: 3px solid var(--line); color: var(--muted); }
+  .body pre { background: #0b0f15; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    overflow: auto; font-size: 12.5px; line-height: 1.5; }
+  .body code { background: #0b0f15; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 12.5px; }
+  .body pre code { border: 0; padding: 0; }
+  .body hr { border: 0; border-top: 1px dashed var(--line); margin: 12px 0; }
+  .body table.pipe { border-collapse: collapse; width: 100%; margin: 0 0 10px; font-size: 13px; }
+  .body table.pipe td { border: 1px solid var(--line); padding: 4px 8px; vertical-align: top; }
+  .body table.pipe tr:first-child td { color: var(--muted); }
+  mark { background: var(--mark); color: #ffe9a8; border-radius: 3px; padding: 0 2px; }
+  .empty { color: var(--muted); text-align: center; padding: 60px 0; }
+  .memory-block { white-space: pre-wrap; font-size: 13px; line-height: 1.6; background: #0b0f15;
+    border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .memory-block h3 { color: var(--accent); margin: 14px 0 6px; font-size: 13.5px; }
+  .foot { color: var(--muted); font-size: 12px; padding: 10px 0 0; }
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; padding: 12px; }
+    aside { position: static; max-height: none; }
+    .day-list { display: flex; flex-wrap: wrap; gap: 4px; }
+    .day { border: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="title-row">
+    <h1>鲸眠的日记</h1>
+    <span class="sub" id="stats">正在读取…</span>
+  </div>
+  <div class="tabs" id="tabs"></div>
+</header>
+<main>
+  <aside>
+    <input class="search" id="search" placeholder="搜日记内容 / 关键词…" />
+    <div class="day-list" id="days"></div>
+  </aside>
+  <section id="content"><div class="empty">正在读取日记…</div></section>
+</main>
+<script>
+const SOURCES = [
+  { key: 'all',     label: '全部' },
+  { key: 'public',  label: '公开日记' },
+  { key: 'private', label: '私密日记' },
+  { key: 'digest',  label: 'QQ/B站 摘要' },
+  { key: 'memory',  label: '她的记忆卡' },
+];
+let data = null;
+let tab = 'all';
+let query = '';
+let activeDate = '';
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtBytes = (n) => n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B';
+
+function inlineMd(s) {
+  let x = esc(s);
+  x = x.replace(/`([^`]+)`/g, '<code>$1</code>');
+  x = x.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  x = x.replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  x = x.replace(/\[([^\]]+)\]\((https?:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  return x;
+}
+
+function renderMd(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const out = [];
+  let inCode = false, code = [], para = [], list = [], table = [];
+  const flushPara = () => { if (para.length) { out.push('<p>' + inlineMd(para.join(' ')) + '</p>'); para = []; } };
+  const flushList = () => { if (list.length) { out.push('<ul>' + list.map((li) => '<li>' + inlineMd(li) + '</li>').join('') + '</ul>'); list = []; } };
+  const flushTable = () => {
+    if (!table.length) return;
+    const rows = table.filter((r) => !/^\|?\s*-{2,}/.test(r.replace(/\s+/g, ' ').trim().slice(0, 12)) || !r.includes('---'));
+    out.push('<table class="pipe">' + rows.map((r) => '<tr>' + r.replace(/^\||\|$/g, '').split('|').map((c) => '<td>' + inlineMd(c.trim()) + '</td>').join('') + '</tr>').join('') + '</table>');
+    table = [];
+  };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    if (/^```/.test(line)) {
+      flushPara(); flushList(); flushTable();
+      if (inCode) { out.push('<pre><code>' + esc(code.join('\n')) + '</code></pre>'); code = []; inCode = false; }
+      else inCode = true;
+      continue;
+    }
+    if (inCode) { code.push(raw); continue; }
+    if (!line.trim()) { flushPara(); flushList(); flushTable(); continue; }
+    if (/^#{1,6}\s/.test(line)) {
+      flushPara(); flushList(); flushTable();
+      const level = Math.min(6, line.match(/^#+/)[0].length);
+      out.push('<' + 'h' + (level <= 2 ? 3 : 4) + '>' + inlineMd(line.replace(/^#+\s*/, '')) + '</' + 'h' + (level <= 2 ? 3 : 4) + '>');
+      continue;
+    }
+    if (/^>\s?/.test(line)) { flushPara(); flushList(); flushTable(); out.push('<blockquote>' + inlineMd(line.replace(/^>\s?/, '')) + '</blockquote>'); continue; }
+    if (/^\s*[-*+]\s+/.test(line)) { flushPara(); flushTable(); list.push(line.replace(/^\s*[-*+]\s+/, '')); continue; }
+    if (/^\s*\d+[.)]\s+/.test(line)) { flushPara(); flushTable(); list.push(line.replace(/^\s*\d+[.)]\s+/, '')); continue; }
+    if (/^\|/.test(line)) { flushPara(); flushList(); table.push(line); continue; }
+    if (/^-{3,}$/.test(line.trim())) { flushPara(); flushList(); flushTable(); out.push('<hr />'); continue; }
+    flushTable();
+    para.push(line);
+  }
+  flushPara(); flushList(); flushTable();
+  if (inCode) out.push('<pre><code>' + esc(code.join('\n')) + '</code></pre>');
+  return out.join('');
+}
+
+function highlight(html, q) {
+  if (!q) return html;
+  const safe = esc(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  try { return html.replace(new RegExp('(' + safe + ')', 'gi'), '<mark>$1</mark>'); } catch { return html; }
+}
+
+function allEntries() {
+  const pub = (data?.public ?? []).map((e) => ({ ...e, tab: 'public' }));
+  const priv = (data?.private ?? []).map((e) => ({ ...e, tab: 'private' }));
+  const dig = (data?.digest ?? []).map((e) => ({ ...e, tab: 'digest' }));
+  return [...pub, ...priv, ...dig];
+}
+
+function counts() {
+  return {
+    all: (data?.public?.length ?? 0) + (data?.private?.length ?? 0) + (data?.digest?.length ?? 0),
+    public: data?.public?.length ?? 0,
+    private: data?.private?.length ?? 0,
+    digest: data?.digest?.length ?? 0,
+    memory: (data?.memory?.qq ? 1 : 0) + (data?.memory?.bili ? 1 : 0),
+  };
+}
+
+function renderTabs() {
+  const c = counts();
+  $('tabs').innerHTML = SOURCES.map((s) =>
+    `<button class="tab ${s.key === tab ? 'active' : ''}" data-tab="${s.key}">${s.label}<span class="n">${c[s.key]}</span></button>`).join('');
+}
+
+function visibleEntries() {
+  let items = allEntries();
+  if (tab !== 'all' && tab !== 'memory') items = items.filter((e) => e.tab === tab);
+  if (activeDate) items = items.filter((e) => e.date === activeDate);
+  if (query) {
+    const q = query.toLowerCase();
+    items = items.filter((e) => String(e.searchText ?? '').toLowerCase().includes(q) || String(e.header ?? '').toLowerCase().includes(q));
+  }
+  items.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.time || '').localeCompare(a.time || ''));
+  return items;
+}
+
+function renderDays() {
+  const items = allEntries().filter((e) => e.date);
+  const map = new Map();
+  for (const e of items) map.set(e.date, (map.get(e.date) ?? 0) + 1);
+  const days = [...map.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  const rows = [`<div class="day ${activeDate ? '' : 'active'}" data-day=""><span>全部日子</span><span class="c">${items.length}</span></div>`];
+  for (const [d, n] of days) rows.push(`<div class="day ${activeDate === d ? 'active' : ''}" data-day="${d}"><span>${d}</span><span class="c">${n}</span></div>`);
+  $('days').innerHTML = rows.join('');
+}
+
+function renderContent() {
+  if (!data) return;
+  const content = $('content');
+  if (tab === 'memory') {
+    const qq = data.memory?.qq || '（没有 QQ 记忆卡）';
+    const bili = data.memory?.bili || '（没有 B站 记忆卡）';
+    content.innerHTML = `
+      <div class="day-head"><span>她的记忆卡</span><span>就是每轮真正塞进她提示词里的那两段</span></div>
+      <div class="card"><div class="meta"><span class="chip">QQ · ${fmtBytes(data.sources?.memoryQq?.bytes ?? 0)}</span></div>
+        <div class="memory-block">${highlight(renderMd(qq), query)}</div></div>
+      <div class="card"><div class="meta"><span class="chip private">B站 · ${fmtBytes(data.sources?.memoryBili?.bytes ?? 0)}</span></div>
+        <div class="memory-block">${highlight(renderMd(bili), query)}</div></div>`;
+    return;
+  }
+  const items = visibleEntries();
+  if (!items.length) { content.innerHTML = `<div class="empty">没有匹配的日记${query ? `（关键词：${esc(query)}）` : ''}</div>`; return; }
+  const grouped = new Map();
+  for (const it of items) { const k = it.date || '未标注日期'; if (!grouped.has(k)) grouped.set(k, []); grouped.get(k).push(it); }
+  const html = [];
+  for (const [day, list] of grouped) {
+    html.push(`<div class="day-head"><span>${esc(day)}</span><span>${list.length} 条</span></div>`);
+    for (const it of list) {
+      const cls = it.tab === 'private' ? 'private' : it.tab === 'digest' ? 'digest' : 'public';
+      html.push(`<article class="card ${cls}">
+        <div class="meta">
+          <span class="chip ${cls}">${esc(it.label)}</span>
+          <span class="time">${esc(it.time || '')}</span>
+        </div>
+        <h2>${highlight(esc(it.header), query)}</h2>
+        <div class="body">${highlight(renderMd(it.body), query)}</div>
+      </article>`);
+    }
+  }
+  content.innerHTML = html.join('');
+}
+
+function renderStats() {
+  if (!data) return;
+  const t = data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+  $('stats').textContent = `角色 ${data.character || ''} · 公开 ${data.public?.length ?? 0} · 私密 ${data.private?.length ?? 0} · 摘要 ${data.digest?.length ?? 0} 条 · 读取于 ${t}`;
+}
+
+function renderAll() { renderTabs(); renderDays(); renderContent(); renderStats(); }
+
+async function load(first) {
+  try {
+    const r = await fetch('/api/all', { cache: 'no-store' });
+    data = await r.json();
+    if (!data?.ok) throw new Error(data?.error || '读取失败');
+    renderAll();
+  } catch (e) {
+    $('content').innerHTML = `<div class="empty">读取失败：${esc(String(e?.message ?? e))}</div>`;
+  }
+}
+
+$('tabs').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-tab]');
+  if (!btn) return;
+  tab = btn.dataset.tab;
+  if (tab === 'memory') activeDate = '';
+  renderAll();
+});
+$('days').addEventListener('click', (ev) => {
+  const d = ev.target.closest('[data-day]');
+  if (!d) return;
+  activeDate = d.dataset.day;
+  if (tab === 'memory') tab = 'all';
+  renderAll();
+});
+$('search').addEventListener('input', (ev) => { query = ev.target.value.trim(); renderContent(); });
+
+load(true);
+setInterval(() => { if (!document.hidden) load(false); }, 20000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(false); });
+</script>
+</body>
+</html>
