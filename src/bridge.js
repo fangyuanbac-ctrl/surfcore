@@ -13853,6 +13853,31 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     }
   }
 
+  // 2026-11-14（主人要求）：她自己写的「我对主人的认识」——B站 侧维护，两侧都注入。
+  // 只读、按 mtime 缓存；文件不存在/为空时整段不出现（别硬编一份假认识 ✗）。
+  let ownerUnderstandingCache = { key: '', text: '' };
+  function ownerUnderstandingPromptBlock() {
+    const file = path.join(path.dirname(MEMORY_CARD_PATHS.promptQq), 'owner-understanding.md');
+    try {
+      const stat = fs.statSync(file);
+      const sig = `${stat.mtimeMs}:${stat.size}`;
+      if (ownerUnderstandingCache.key === sig) return ownerUnderstandingCache.text;
+      const raw = fs.readFileSync(file, 'utf8').trim();
+      const body = raw
+        .split('\n')
+        .filter((line) => line.trim() && !/^#\s/.test(line) && !/^>\s?/.test(line))
+        .join('\n')
+        .slice(0, 1500);
+      const text = body
+        ? `## 你对他（主人）的认识（你自己写的，不是设定）\n${body}\n（这页由 B站 那边的你维护；QQ 这边照着它对待他，不用改，也别背台词。）`
+        : '';
+      ownerUnderstandingCache = { key: sig, text };
+      return text;
+    } catch {
+      return '';
+    }
+  }
+
   // 记忆方式：只从合体层 config.json 读 memory.mode / vectorMemory，按 mtime 缓存。
   // 文件缺失或损坏时回落到叙事记忆，绝不因为读不到配置而清空记忆块。
   let unifiedMemoryCache = { key: '', mode: 'narrative', vectorMemory: normalizeVectorMemoryConfig({}) };
@@ -15222,6 +15247,9 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     // 叙事侧必须带 key：dev 的按会话记忆隔离靠 memoryCardPromptBlock(key)。
     const memoryCardText = memoryMode() === 'vector' ? String(vectorBlock || '').trim() : memoryCardPromptBlock(key);
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
+    // 2026-11-14（主人要求）：她自己写的「我对主人的认识」（与 B站 侧同一个文件）
+    const understandingText = ownerUnderstandingPromptBlock();
+    const understandingLine = understandingText ? `${understandingText}\n\n` : '';
     // 2026-11-11：主人的 B站 口味（只读缓存，B站 侧刷新）——QQ 侧也能自然说出来，不误答「要登录/风控」
     const ownerBiliTaste = (() => {
       try {
@@ -15233,7 +15261,7 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     })();
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + ownerBiliTaste + memoryCardLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + hotLine + selfLine + digestLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + ownerBiliTaste + memoryCardLine + understandingLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + hotLine + selfLine + digestLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -15242,6 +15270,7 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
       admin: adminLine.length,
       bili: biliLine.length,
       memory: memoryCardLine.length,
+      understanding: understandingLine.length,
       voice: voiceLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,

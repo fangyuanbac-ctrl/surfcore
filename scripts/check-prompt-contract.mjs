@@ -180,6 +180,22 @@ check('display-policy-single-source', 'comment/dm/fav 的闸门数字来自 disp
   return problems.length ? { ok: false, detail: problems.join('; ') } : true
 })
 
+// 12. 「我对主人的认识」：文件存在，且 QQ（bridge）与 B站（scheduler）两侧都注入（2026-11-14，报告 §114）
+check('owner-understanding-wired', '「我对主人的认识」文件存在且两侧注入', () => {
+  const problems = []
+  const hasFile = (() => {
+    try {
+      const base = path.join(home, '.dsh/surfcore/characters')
+      return fs.readdirSync(base).some((d) => fs.existsSync(path.join(base, d, 'memory', 'owner-understanding.md')))
+    } catch { return false }
+  })()
+  if (!hasFile) problems.push('owner-understanding.md 不存在')
+  if (!S.bridge.includes('ownerUnderstandingPromptBlock')) problems.push('bridge.js 没注入')
+  if (!S.scheduler.includes('ownerUnderstandingBlockForBili')) problems.push('scheduler.js 没注入')
+  if (!S.scheduler.includes('owner-understanding.md')) problems.push('scheduler 没告诉她在哪改')
+  return problems.length ? { ok: false, detail: problems.join('; ') } : true
+})
+
 const failed = results.filter((r) => !r.ok)
 if (process.argv.includes('--json')) {
   console.log(JSON.stringify({ ok: failed.length === 0, results }, null, 2))

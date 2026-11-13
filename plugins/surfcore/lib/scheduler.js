@@ -190,6 +190,19 @@ function qqMemoryBlockForBili() {
   return `## QQ 那边（最近，来自 QQ 私聊的脱敏摘要，不是原文）\n${body}`
 }
 
+/** 2026-11-14（主人要求）：她自己写的「我对主人的认识」——B站 侧维护、两侧注入。 */
+function ownerUnderstandingBlockForBili() {
+  const text = readTextFile(path.join(activeMemoryPaths().dir, 'owner-understanding.md'))
+  if (!text) return ''
+  const body = text
+    .split('\n')
+    .filter((line) => line.trim() && !/^#\s/.test(line) && !/^>\s?/.test(line))
+    .join('\n')
+    .slice(0, 1500)
+  if (!body) return ''
+  return `## 你对他（主人）的认识（你自己写的，不是设定）\n${body}`
+}
+
 /** 记忆卡（B站侧）：只拿公开冲浪记忆 + 共享锚点，不含 QQ 私事（隐私边界）。 */
 function memoryCardBlockForBili() {
   const unified = readUnified().config
@@ -212,6 +225,7 @@ function identityContextLines() {
     alignmentBlockForBili(),
     qqMemoryBlockForBili(),
     memoryCardBlockForBili(),
+    ownerUnderstandingBlockForBili(),
     hot,
     self,
     digest,
@@ -552,6 +566,10 @@ function wakePrompt(st, tools = '') {
     '     ⚠️ 必须带视频链接：链接里的 BV 就是「同一视频」的判重依据 ✓',
     '   · via=comment：comment --share --auto --reason … --score … --rank 1（旧功能，仍可用 ✓）',
     '6) 写两本日记（散文体 + 表格 ✓ 私人那本写「偏好校准」）；写之前看一眼上面「QQ 那边」——和主人在 QQ 上聊到的事，可以自然写进私人日记（用自己的话，不用照抄摘要）',
+    // 2026-11-14（主人要求）：她自己的「对他的认识」是一份持续修订的判断，不是设定。
+    '6.5) ⭐ 对他的认识：上面「你对他（主人）的认识」是你自己写的，文件在 `' + path.join(activeMemoryPaths().dir, 'owner-understanding.md') + '`。',
+    '     今晚如果对他的判断有变化（新发现 / 推翻旧判断 / 更确定），改「现在的判断」并在「变化记录」补一条带日期的短句；没变化就不动 ✓',
+    '     写判断不写任务；不确定的地方标「不确定」；别写讨好的话（他最烦客服腔）',
     // ⭐ 2026-10-18 主人定：每轮流程**最后**扫一遍"有没有没回的评论" → 有就**一起**推给我 ✓
     '7) ⭐ `comment-digest --hours 24` —— **每轮最后都要扫**：有没回的评论就**一起**推给我（不是一条条报 ✗）',
     '   回不回、怎么回：主人 / 其他人 → 见「倾听」的分两侧规则 ✓',
