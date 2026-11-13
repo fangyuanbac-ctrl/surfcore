@@ -75,6 +75,17 @@ async function parentAuthor(aid, rootRpid, parentRpid, replyType = 1) {
       headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/' },
     })).json()
     const list = j.data?.replies ?? []
+    // 2026-11-13（报告 §109）：直接回复「根评论」时（root === parent，楼中楼还没人回），
+    // reply/reply 的 replies 是空的，但作者就在 data.root 里。
+    // 以前只扫 replies → 查不到 uid → fail-closed，把「想公开回主人一句」也挡了 ✗
+    const rootC = j.data?.root
+    if (rootC && String(rootC.rpid) === String(parentRpid)) {
+      return {
+        mid: String(rootC.mid ?? rootC.member?.mid ?? ''),
+        name: rootC.member?.uname ?? '',
+        ctime: Number(rootC.ctime) * 1000 || 0,
+      }
+    }
     const hit = list.find((r) => String(r.rpid) === String(parentRpid))
     if (hit) return {
       mid: String(hit.mid ?? hit.member?.mid ?? ''),
@@ -228,12 +239,17 @@ if (ONCE) {
     } else {
       const led = loadReplied()
       const hist = (led.byUid?.[who.mid] ?? []).filter((x) => Date.now() - new Date(x.at).getTime() < ONCE_DAYS * 86_400_000)
-      if (hist.length) {
+      // 2026-11-13（报告 §109）：主人不受「同一人 30 天一条」约束 —— 她公开回主人一句是正常互动，
+      // 不是刷屏/拉锯；以前这里会把主人也拦掉（只是常常先被上面的 fail-closed 挡住，没暴露）。
+      if (String(who.mid) === String(config().owner?.mid ?? '')) {
+        console.log('  [once] 对方是主人 → 跳过 30 天判重 ✓')
+      } else if (hist.length) {
         console.error(`  [once] ${ONCE_DAYS} 天内已经回过 ${who.name || who.mid}（${hist[0].at} · ${hist[0].target}）→ 这次不回`)
         console.error('  （不想要这个开关，就别传 --once-per-person）')
         process.exit(2)
+      } else {
+        console.log(`  [once] ${who.name || who.mid} 在 ${ONCE_DAYS} 天内没被回过 ✓ 可以回`)
       }
-      console.log(`  [once] ${who.name || who.mid} 在 ${ONCE_DAYS} 天内没被回过 ✓ 可以回`)
     }
   }
 }
