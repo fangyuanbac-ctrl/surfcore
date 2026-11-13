@@ -7,6 +7,7 @@
 //   ② 那个新会话默认没有完全权限，agent 起来后什么都干不了
 // 这个命令把"该确认的事"列成一张表，缺哪项就直说缺哪项。
 import { accountBili, biliState, biliStateDir } from '../lib/state-paths.mjs'
+import { configPath } from '../lib/config.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -14,7 +15,10 @@ import { fileURLToPath } from 'node:url'
 
 const HOME = (process.env.USERPROFILE || process.env.HOME || '/')
 const DSH = path.join(HOME, '.dsh')
-const CFG = path.join(DSH, 'bili.config.json')
+// 2026-11-13（报告 §108）：配置已迁到插件层 `~/.dsh/surfcore/bili.config.json`（可用
+// SURFCORE_BILI_CONFIG 覆盖）。这里以前固定查 `~/.dsh/bili.config.json`，所有按新布局
+// 安装的机器都会误报「配置文件 ✗」，并连带把身份/分享/推送几项一起带成 ✗。
+const CFG = configPath
 const CRED = accountBili('credentials.json')
 const OK = '✓'
 const NO = '✗'
