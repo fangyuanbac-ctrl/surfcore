@@ -678,3 +678,44 @@ test('桌宠记忆在提示词预算里不会被普通最近记忆挤掉', () =>
   assert.match(out, /桌宠（私下相处）/, '桌宠小节必须出现在 QQ 注入块里');
   assert.match(out, /桌宠预算验证/, '预算紧张时也不能先砍掉桌宠记忆');
 });
+
+// 2026-11-14 修（§110）：最近记忆按真实发生时间排；主人的重要偏好单独成段。
+test('最近记得的：按发生时间排，不被「旧话被再次提到」刷新到前面', () => {
+  const now = Date.parse('2026-11-14T10:00:00+08:00');
+  const card = createEmptyCard(now);
+  const oldAt = Date.parse('2026-11-09T21:00:00+08:00');
+  const newAt = Date.parse('2026-11-12T21:00:00+08:00');
+  addMemoryRecord(card, {
+    source: 'qq', sourceId: 'old-1', scope: 'qq', conversationKey: 'private:1',
+    text: '前天晚上聊到那家店排队排了很久', createdAt: oldAt, lastSeenAt: now,
+  }, CFG, now);
+  addMemoryRecord(card, {
+    source: 'qq', sourceId: 'new-1', scope: 'qq', conversationKey: 'private:1',
+    text: '昨天晚上说的那个教程视频挺长', createdAt: newAt, lastSeenAt: newAt,
+  }, CFG, now);
+  const text = renderMemoryCard(card, { platform: 'qq', config: CFG, now, conversationKey: 'private:1', maxChars: 4000 });
+  const recent = text.split('## 最近记得的')[1] ?? '';
+  assert.ok(recent.includes('昨天晚上说的那个教程视频挺长'), '新记忆应进最近段');
+  assert.ok(recent.indexOf('昨天晚上') < recent.indexOf('前天晚上'), '最近段应按发生时间倒序，而不是按 lastSeenAt');
+});
+
+test('和主人的事：主人偏好不会被一串日常挤出提示词（QQ/B站 都有）', () => {
+  const now = Date.parse('2026-11-14T10:00:00+08:00');
+  const card = createEmptyCard(now);
+  for (let i = 0; i < 14; i += 1) {
+    addMemoryRecord(card, {
+      source: 'qq', sourceId: `chat-${i}`, scope: 'qq', conversationKey: 'private:1',
+      text: `日常闲聊第${i}句，今天天气还行，随便说两句`, createdAt: now - i * 60000, lastSeenAt: now - i * 60000,
+    }, CFG, now);
+  }
+  addMemoryRecord(card, {
+    source: 'qq', sourceId: 'pref-1', scope: 'qq', conversationKey: 'private:1', isOwner: true,
+    text: '我本人不太喜欢和他人诉苦，包括父母，只喜欢报喜不报忧',
+    createdAt: Date.parse('2026-11-10T21:00:00+08:00'), lastSeenAt: Date.parse('2026-11-10T21:00:00+08:00'),
+  }, CFG, now);
+  const qqText = renderMemoryCard(card, { platform: 'qq', config: { ...CFG, includeQqInBili: true }, now, conversationKey: 'private:1', maxChars: 4000 });
+  assert.ok(qqText.includes('## 和主人的事（重要）'), 'QQ 注入块应有「和主人的事」段');
+  assert.ok(qqText.includes('不太喜欢和他人诉苦'), '主人偏好应进注入块');
+  const biliText = renderMemoryCard(card, { platform: 'bili', config: { ...CFG, includeQqInBili: true }, now, maxChars: 4000 });
+  assert.ok(biliText.includes('不太喜欢和他人诉苦'), 'B站 注入块也应能看到主人的重要偏好');
+});

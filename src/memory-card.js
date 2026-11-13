@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 记忆卡（Memory Card）—— 角色自己的长期记忆。
  *
  * 和「角色卡」的区别：
@@ -1317,18 +1317,21 @@ export function addMemoryRecord(card, input, config = {}, now = Date.now()) {
   return { added: true, record };
 }
 
-/** 被提到 = 复习：刷新相关记忆的 lastSeenAt / recallCount。 */
+/** 被提到 = 复习：刷新相关记忆的 lastSeenAt / recallCount。
+ *  2026-11-14：旧实现只要命中 1 个两字词就 refresh，长对话里旧记忆被批量「复活」，
+ *  lastSeenAt 比真正新发生的事还新 → 注入块永远是那几条旧话。现在要求至少命中 2 个
+ *  词（且消息本身够长），并且只认强匹配。 */
 export function touchMemories(card, text, now = Date.now()) {
   const haystack = String(text ?? '');
-  if (haystack.length < 4) return 0;
+  if (haystack.length < 8) return 0;
   const uniqueTokens = textTokens(haystack, 24);
-  if (!uniqueTokens.length) return 0;
+  if (uniqueTokens.length < 2) return 0;
   let touched = 0;
   for (const record of card.records) {
     if (touched >= 5) break;
     const body = `${record.title} ${record.text}`;
     const hits = uniqueTokens.filter((token) => body.includes(token)).length;
-    if (!hits) continue;
+    if (hits < 2) continue;
     record.lastSeenAt = iso(now);
     record.recallCount = Math.min(999, (Number(record.recallCount) || 0) + 1);
     touched += 1;
@@ -1911,20 +1914,33 @@ function sectionize(card, { platform = 'all', now = Date.now(), config = {}, con
   for (const record of visible) if (!used.has(record.id)) push(fuzzy, record);
 
   const byImportance = (a, b) => (b.importance - a.importance)
-    || (timeOf(b.lastSeenAt, 0) - timeOf(a.lastSeenAt, 0));
-  const byRecent = (a, b) => timeOf(b.lastSeenAt, 0) - timeOf(a.lastSeenAt, 0);
+    || (timeOf(b.createdAt, 0) - timeOf(a.createdAt, 0));
+  const bySeen = (a, b) => timeOf(b.lastSeenAt, 0) - timeOf(a.lastSeenAt, 0);
+  // 2026-11-14 修：recent 以前按 lastSeenAt 排，而 lastSeenAt 会被「旧话被再次提到」
+  // 反复刷新（touchMemories），结果旧记忆被提到一次就霸占前 12 名，最近两天新发生的事
+  // 反而进不了注入块（用户反馈：前天聊的、主人的喜好她都不记得）。
+  // 「最近记得的」按真实发生时间排，才是用户理解的最近。
+  const byCreatedRecent = (a, b) => (timeOf(b.createdAt, 0) - timeOf(a.createdAt, 0))
+    || (b.importance - a.importance);
+  // 「和主人的事」单独按重要度取，不受 recent 名额挤占；这样喜好/约定类记忆不会被
+  // 一串日常寒暄挤出提示词。
+  const ownerTop = visible
+    .filter((item) => !item.pinned && !item.firstMet && item.platform !== 'pet'
+      && item.tags.includes('owner'))
+    .sort(byImportance);
 
   return {
-    firstMet: firstMet.sort(byRecent),
+    firstMet: firstMet.sort(bySeen),
     anchors: anchors.sort(byImportance),
     privateGroup: privateGroup.sort(byImportance),
     initial: initial.sort((a, b) => timeOf(a.createdAt, 0) - timeOf(b.createdAt, 0)),
     owner: owner.sort(byImportance),
-    recent: recent.sort(byRecent),
+    ownerTop,
+    recent: recent.sort(byCreatedRecent),
     biliModule: biliModule.sort(byImportance),
     qqModule: qqModule.sort(byImportance),
     petModule: petModule.sort(byImportance),
-    fuzzy: fuzzy.sort(byRecent),
+    fuzzy: fuzzy.sort(bySeen),
   };
 }
 
@@ -1948,20 +1964,34 @@ export function renderMemoryCard(card, options = {}) {
     runtimeSharing,
   });
   const limits = full
-    ? { firstMet: 9999, anchors: 9999, initial: 9999, owner: 9999, recent: 9999, bili: 9999, qq: 9999, pet: 9999, fuzzy: 9999 }
+    ? { firstMet: 9999, anchors: 9999, initial: 9999, owner: 9999, ownerTop: 0, recent: 9999, bili: 9999, qq: 9999, pet: 9999, fuzzy: 9999 }
     : (platform === 'bili'
-      ? { firstMet: 0, anchors: 4, initial: 0, owner: 0, recent: 6, bili: 8, qq: 0, pet: 0, fuzzy: 3 }
-      : { firstMet: 1, anchors: 5, initial: 6, owner: 8, recent: 12, bili: 4, qq: 8, pet: 4, fuzzy: 4 });
+      ? { firstMet: 0, anchors: 4, initial: 0, owner: 0, ownerTop: 6, recent: 4, bili: 8, qq: 0, pet: 0, fuzzy: 3 }
+      : { firstMet: 1, anchors: 5, initial: 6, owner: 8, ownerTop: 12, recent: 8, bili: 4, qq: 8, pet: 4, fuzzy: 4 });
+  // 同一段记忆只允许出现一次：ownerTop 会和 recent 高度重叠，先出现者优先留。
+  const picked = new Set();
+  const take = (list, limit) => {
+    const out = [];
+    for (const record of list) {
+      if (out.length >= limit) break;
+      if (picked.has(record.id)) continue;
+      picked.add(record.id);
+      out.push(record);
+    }
+    return out;
+  };
+  const line = (record) => recordLine(record, { platform, full });
   const calls = [
-    { key: 'firstMet', title: '## 初次相遇（和主人）', priority: 120, lines: sections.firstMet.slice(0, limits.firstMet).map((record) => recordLine(record, { platform, full })) },
-    { key: 'anchors', title: '## 永远不会忘的', priority: 100, lines: sections.anchors.slice(0, limits.anchors).map((record) => recordLine(record, { platform, full })) },
-    { key: 'initial', title: '## 最初的日子（和主人）', priority: 26, lines: sections.initial.slice(0, limits.initial).map((record) => recordLine(record, { platform, full })) },
-    { key: 'owner', title: '## 和主人（管理员）的记忆', priority: 28, lines: sections.owner.slice(0, limits.owner).map((record) => recordLine(record, { platform, full })) },
-    { key: 'recent', title: '## 最近记得的', priority: 30, lines: sections.recent.slice(0, limits.recent).map((record) => recordLine(record, { platform, full })) },
-    { key: 'pet', title: '## 桌宠（私下相处）', priority: 36, lines: (sections.petModule ?? []).slice(0, limits.pet).map((record) => recordLine(record, { platform, full })) },
-    { key: 'bili', title: '## B站（冲浪）', priority: 22, lines: sections.biliModule.slice(0, limits.bili).map((record) => recordLine(record, { platform, full })) },
-    { key: 'qq', title: '## QQ 与群里的记忆', priority: 20, lines: sections.qqModule.slice(0, limits.qq).map((record) => recordLine(record, { platform, full })) },
-    { key: 'fuzzy', title: '## 正在模糊的事', priority: 10, lines: sections.fuzzy.slice(0, limits.fuzzy).map((record) => recordLine(record, { platform, full })) },
+    { key: 'firstMet', title: '## 初次相遇（和主人）', priority: 120, lines: take(sections.firstMet, limits.firstMet).map(line) },
+    { key: 'anchors', title: '## 永远不会忘的', priority: 100, lines: take(sections.anchors, limits.anchors).map(line) },
+    { key: 'ownerTop', title: '## 和主人的事（重要）', priority: 34, lines: take(sections.ownerTop ?? [], limits.ownerTop).map(line) },
+    { key: 'initial', title: '## 最初的日子（和主人）', priority: 26, lines: take(sections.initial, limits.initial).map(line) },
+    { key: 'owner', title: '## 和主人（管理员）的记忆', priority: 28, lines: take(sections.owner, limits.owner).map(line) },
+    { key: 'recent', title: '## 最近记得的', priority: 30, lines: take(sections.recent, limits.recent).map(line) },
+    { key: 'pet', title: '## 桌宠（私下相处）', priority: 36, lines: take(sections.petModule ?? [], limits.pet).map(line) },
+    { key: 'bili', title: '## B站（冲浪）', priority: 22, lines: take(sections.biliModule, limits.bili).map(line) },
+    { key: 'qq', title: '## QQ 与群里的记忆', priority: 20, lines: take(sections.qqModule, limits.qq).map(line) },
+    { key: 'fuzzy', title: '## 正在模糊的事', priority: 10, lines: take(sections.fuzzy, limits.fuzzy).map(line) },
   ].filter((section) => section.lines.length);
   // 群里的近况单独追加，**不参与主预算裁剪**：否则 5 个群会把私聊自己的记忆挤到只剩几条。
   // 它有自己的字数上限，插在 footer 之前，主块仍保持原来的注入预算。
@@ -2294,3 +2324,7 @@ export function markOwnerNotified(card, level, now = Date.now()) {
   if (!card.alerts.lastNotified || typeof card.alerts.lastNotified !== 'object') card.alerts.lastNotified = {};
   card.alerts.lastNotified[String(level)] = now;
 }
+
+
+
+
