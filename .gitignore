@@ -80,3 +80,6 @@ dist/*.zip
 # embedding runtime local pid/log
 plugins/surfcore/runtime/service.pid
 plugins/surfcore/runtime/service.log
+
+# 日记阅读器：运行时生成的二维码页（含访问码，不能入库）
+scripts/diary-viewer-phone.html

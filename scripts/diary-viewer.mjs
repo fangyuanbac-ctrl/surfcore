@@ -6,7 +6,10 @@
 //   · QQ/B站 每段收尾有一句摘要写在 shared/digest.jsonl；
 //   · 她实际被注入的「记忆卡」也有对应 prompt 文件，一起给主人看，方便对照"她记得什么"。
 //
-// 只读、不写任何文件、只监听 127.0.0.1，浏览器收藏或桌面快捷方式打开即可。
+// 只读、不写任何文件；默认只监听 127.0.0.1。
+// 手机上看得开「局域网模式」：scripts/diary-viewer.config.json 里 {"lan":true}，
+// 监听 0.0.0.0，但所有非回环请求必须带访问码（自动生成在 ~/.dsh/surfcore/diary-viewer-token，
+// URL 带 ?key=<访问码> 一次即可，之后浏览器会记 cookie）。
 //
 // 用法：
 //   node scripts/diary-viewer.mjs            # 起服务，浏览器手动开 http://127.0.0.1:8787
@@ -23,6 +26,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { exec } from 'node:child_process';
 
 const HOME = process.env.USERPROFILE || os.homedir();
@@ -31,10 +35,42 @@ const CHAR_DIR = path.join(DSH_HOME, 'surfcore', 'characters', 'char-mw6qslxp');
 const BILI_DIR = path.join(CHAR_DIR, 'bili');
 const MEM_DIR = path.join(CHAR_DIR, 'memory');
 const DIGEST_FILE = path.join(DSH_HOME, 'surfcore', 'shared', 'digest.jsonl');
-const PORT = Number(process.env.DIARY_VIEWER_PORT || 8787);
-const HOST = '127.0.0.1';
 const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const HTML_FILE = path.join(HERE, 'diary-viewer.html');
+const CONFIG_FILE = path.join(HERE, 'diary-viewer.config.json');
+const TOKEN_FILE = path.join(DSH_HOME, 'surfcore', 'diary-viewer-token');
+
+let fileCfg = {};
+try { fileCfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')) || {}; } catch { fileCfg = {}; }
+const LAN = fileCfg.lan === true || process.env.DIARY_VIEWER_LAN === '1';
+const PORT = Number(process.env.DIARY_VIEWER_PORT || fileCfg.port || 8787);
+const HOST = LAN ? '0.0.0.0' : '127.0.0.1';
+
+// 局域网访问码：优先 env/配置，其次 token 文件，最后自动生成并写文件。
+function loadToken() {
+  if (process.env.DIARY_VIEWER_TOKEN) return String(process.env.DIARY_VIEWER_TOKEN);
+  if (fileCfg.token) return String(fileCfg.token);
+  try {
+    const t = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+    if (t.length >= 16) return t;
+  } catch {}
+  const t = crypto.randomBytes(16).toString('hex');
+  try { fs.mkdirSync(path.dirname(TOKEN_FILE), { recursive: true }); fs.writeFileSync(TOKEN_FILE, t + '\n', 'utf8'); } catch {}
+  return t;
+}
+const TOKEN = LAN ? loadToken() : '';
+const isLoopback = (remote) => remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+function safeEq(a, b) {
+  const A = Buffer.from(String(a)); const B = Buffer.from(String(b));
+  return A.length === B.length && crypto.timingSafeEqual(A, B);
+}
+function keyOk(req, url) {
+  if (!LAN) return true;
+  const cookie = String(req.headers.cookie || '');
+  const m = cookie.match(/(?:^|;\s*)dv_key=([^;]+)/);
+  const cands = [url.searchParams.get('key') || '', String(req.headers['x-diary-key'] || ''), m ? decodeURIComponent(m[1]) : ''];
+  return cands.some((c) => c && safeEq(c, TOKEN));
+}
 
 const pad = (n) => String(n).padStart(2, '0');
 const dayOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -167,6 +203,17 @@ function serveHtml(res) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || '/', `http://${HOST}`);
+  const remote = req.socket.remoteAddress || '';
+  if (!isLoopback(remote)) {
+    if (!keyOk(req, url)) {
+      res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+      res.end('需要访问码：在你的电脑上查看 ~/.dsh/surfcore/diary-viewer-token，或让运维会话把带 ?key= 的链接发你。');
+      return;
+    }
+    if (url.searchParams.get('key')) {
+      res.setHeader('set-cookie', `dv_key=${encodeURIComponent(TOKEN)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+    }
+  }
   if (url.pathname === '/' || url.pathname === '/index.html') return serveHtml(res);
   if (url.pathname === '/api/all') {
     try {
@@ -181,7 +228,7 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/health') {
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ok: true, port: PORT, generatedAt: new Date().toISOString() }));
+    res.end(JSON.stringify({ ok: true, port: PORT, lan: LAN, generatedAt: new Date().toISOString() }));
     return;
   }
   if (url.pathname === '/favicon.ico') { res.writeHead(204); res.end(); return; }
@@ -189,8 +236,19 @@ const server = http.createServer((req, res) => {
   res.end('not found');
 });
 
+function lanUrls() {
+  if (!LAN) return [];
+  const out = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const it of list || []) {
+      if (it.family === 'IPv4' && !it.internal) out.push(`http://${it.address}:${PORT}/?key=${encodeURIComponent(TOKEN)}`);
+    }
+  }
+  return out;
+}
+
 function openBrowser() {
-  const target = `http://${HOST}:${PORT}/`;
+  const target = `http://127.0.0.1:${PORT}/`;
   const cmd = process.platform === 'win32'
     ? `cmd /c start "" "${target}"`
     : process.platform === 'darwin' ? `open "${target}"` : `xdg-open "${target}"`;
@@ -200,8 +258,12 @@ function openBrowser() {
 let opened = false;
 function start() {
   server.listen(PORT, HOST, () => {
-    console.log(`日记阅读器：http://${HOST}:${PORT}/`);
+    console.log(`日记阅读器：http://127.0.0.1:${PORT}/`);
     console.log(`  角色目录：${CHAR_DIR}`);
+    if (LAN) {
+      console.log('  局域网模式：非本机访问需要访问码（已生成/复用 token 文件）');
+      for (const u of lanUrls()) console.log(`  手机可开：${u}`);
+    }
     if (process.argv.includes('--open') && !opened) { opened = true; openBrowser(); }
   });
 }
