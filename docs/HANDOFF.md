@@ -5,6 +5,41 @@
 
 ---
 
+## 快照：2026-11-14 20:14（主动找主人重复提问修复 / §124）
+
+### 当前运行态
+
+- DSH base `http://127.0.0.1:52349`；插件 v0.8.9；桥接 pid **9348**（20:16:47 按 PID 重启，无第二实例）。
+- 目的机制已加载新代码；日志 `[目的] 已启动：每 60 秒检查一次；下次 2026/11/14 21:35:20`。
+- `purpose-outreach.json`：`day=2026-11-14`、`countToday=4`、`lastOutcome=sent`、`nextFireAt=21:35:20`（距 20:05:20 那枪 90 分钟）。
+
+### 本批改了什么
+
+- `src/purpose-engine.js`：目标冷却（分享/倾诉 24h、ask/invite/curiosity/follow 48h、第 2 次 7 天）；主人「这说过了 / 问过了」按否定结算；中性回复不再抬高置信度；`pruneGoals` 按 intent 去重；`selectPurpose` 去重窗口 72h/30 条、阈值 0.45、topic 维度；`buildPurposePrompt` pending 72h/5 条、已说过最多 8 条；`ensurePurposeSchedule` 按新 `gapMin` 兜底旧排程。
+- `config.json` 的 `purpose`：`gapMinMs=5400000`、`gapMaxMs=14400000`、`dailyMax=6`；安静时段未动。
+- `scripts/test-purpose-engine.mjs`：新增 6 组回归（冷却 / 同义 / topic / 旧 pending / 说过了 / 中性回复 / 旧排程）。
+
+### 自检
+
+- `test-purpose-engine.mjs` **24/24**；`test-purpose-wiring.mjs` **OK 8/8**；`check-prompt-contract.mjs` **13/13**。
+- `test-audit.mjs` **139/153**；失败项在 session/token/sticker/release 等本轮未触及模块（`test-session-rollover` 等），非本批引入，但整合审计未全绿。
+
+### 备份 / 回滚
+
+- 备份：`C:\Users\1\.dsh\_quarantine\purpose-repeat-2026-11-14\`（`purpose-engine.js.bak`、`config.json.bak`、`test-purpose-engine.mjs.bak`、`HANDOFF.md.bak`、`PITFALLS.md.bak`）。
+- 回滚：覆盖 `.bak` 回原路径，重启桥接；配置同理。
+
+### 未完成 / 观察点
+
+- 未 commit、未 push、未改 main、未 reset。
+- 5 个被叫停的旧目标已在 20:14:04 写成 `rejected` + 7 天冷却（含「陪一会儿」和「mer」）；其余没有历史 `cooldownUntil` 的目标，21:35 第一次真实投递后才写。
+- `purpose-inspect` 是「从素材重建目标」的只读视图，不读真实 state 的 cooldown，不能拿它判断线上是否还会重复。
+- 2 条旧 pending 仍在磁盘；第一条 73.6h 已超 72h 过滤，第二条是 `ask` 型「等他回…」，主人在 19:16 已回「在另一个窗口」，新代码按 `lastOwnerAt > createdAt` 不再注入；下一轮会按新 TTL 清理。
+- 21:35 观察是否还落到旧话题；明天看 `countToday` 是否 ≤6、旧 pending 是否消失。
+- 详见 `SurfCore-安装报告-2026-11-08.md` 的 **§124**（§116 是 cookie 根因更正节，未混写）。
+
+---
+
 ## 快照：2026-11-05 17:45（向量记忆 UI / 一键启动自检 / 完整重建）
 
 ### 当前事实

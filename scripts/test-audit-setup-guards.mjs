@@ -19,6 +19,12 @@ for (const preset of ['qq-chat', 'qq-chat-v2']) {
     'mcp__snowluma-host__snowluma_status', 'mcp__web-search-safe__web_fetch']) {
     assert.equal(guard({ name }), undefined, `${preset}: expected allowed ${name}`);
   }
+  // 2026-11-17 04:54 的真实事故：模型把 snowluma 拼成 snowluna；拒绝原因必须
+  // 直接指出正确命名空间，而不是只回一句“不在白名单”。
+  const misspelled = guard({ name: 'mcp__snowluna__qq_set_wake_config' });
+  assert.equal(typeof misspelled, 'string', `${preset}: 拼错的命名空间必须被拒绝`);
+  assert.match(misspelled, /mcp__snowluma__/, `${preset}: 拒绝原因必须给出正确的 snowluma 命名空间`);
+  assert.match(misspelled, /mcp__snowluma__qq_set_wake_config/, `${preset}: 拒绝原因必须给出纠正后的完整工具名`);
   for (const name of ['web_fetch', 'web_search', 'bash', 'read_file', 'dev_future_tool',
     'mcp__untrusted__web_fetch', '', null, undefined]) {
     try { assert.equal(typeof guard({ name }), 'string', `${preset}: must reject ${String(name)}`); }

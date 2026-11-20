@@ -75,7 +75,7 @@ import { isOwnerOnlyFrame, canConsumePending, buildQuestionAnswers } from './que
 import { createOwnerAudit } from './owner-audit.js';
 import { createTokenLedger } from './token-ledger.js';
 import {
-  buildHandoffBlock, handoffIsUseful, normalizeRolloverConfig, shouldRollSession,
+  buildHandoffBlock, handoffIsUseful, isRolloverWindow, normalizeRolloverConfig, shouldRollSession,
 } from './session-rollover.js';
 import { batchWindowFor, normalizeBatchWindows } from './wake-batch.js';
 import { evaluateLocalFilter, normalizeLocalFilter, FILTER_LABELS } from './wake-filter.js';
@@ -149,6 +149,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const STATE_DIR = path.join(ROOT, 'state');
 const STATE_FILE = path.join(STATE_DIR, 'sessions.json');
+// 主人私聊会话的当前 DSH sessionId。SurfCore 插件只认这个文件来设置
+// danger-full-access；不按 preset 名猜、不扫所有会话，避免把群聊也提权。
+const OWNER_SESSION_FILE = path.join(STATE_DIR, 'qq-owner-session.json');
 const ROLE_STATE_FILE = path.join(STATE_DIR, 'current-role.json');
 const GROUP_POLICY_FILE = path.join(STATE_DIR, 'group-policy.json');
 const LIMIT_MUTE_FILE = path.join(STATE_DIR, 'limit-mutes.json');
@@ -994,6 +997,12 @@ function loadConfig() {
       ignoreSpamCommands: true,
       autoReplyCheckMs: 30000,
       agentPreset: 'qq-chat-v2',
+      // 主人私聊单独用的预设：只对这个 key 生效，群聊继续走 agentPreset。
+      // 该预设保留二代人格与 QQ 工具协议，但挂载 fs/pwsh；没有安装时
+      // modePreset() 会 fail-closed，不会退回 standard。
+      ownerPreset: 'qq-chat-owner',
+      // 由 SurfCore 插件按 state/qq-owner-session.json 落到该会话上。
+      ownerPermission: 'danger-full-access',
       provideRecommendations: true,
       tools: {
         getPrompt: true,
@@ -1163,6 +1172,11 @@ function loadConfig() {
         rolloverKeepRecent: 24,          // 交接块里带最近几句
         rolloverSummaryMaxChars: 700,    // 交接块字数上限
         rolloverMinTurns: 2,             // 刚建的会话不滚（避免和空气交接）
+        // 2026-11-16（主人定）：只在每天凌晨 4 点窗口内主动压；其余时间不压。
+        rolloverNightOnly: true,
+        rolloverNightStartHour: 4,
+        rolloverNightStartMinute: 0,
+        rolloverNightWindowMinutes: 60,
       },
       // 上线补历史消息（2026-10-24 用户要求：默认勾选打开）：
       // 桥接启动 / QQ 账号重新上线时，用 OneBot 历史接口补看掉线期间错过的白名单会话。
@@ -1472,6 +1486,36 @@ function saveState() {
   // 占住 sessions.json.tmp 时抛 EPERM，且写出的文件权限与其它 state 文件不一致。
   if (!stateWritable) return; // 见 loadState：读失败/损坏时绝不回写，避免把丢失变成永久
   atomicWriteJson(STATE_FILE, state);
+}
+
+// owner 会话权限交接：桥接建好主人私聊会话后写这个文件，SurfCore 插件按文件里的
+// sessionId 调 ctx.permissionPresets.set。不要把这个文件当“所有会话”的开关：
+// 群聊永远不写进来，插件也只认这一条 sessionId。
+function writeOwnerSessionFile(sessionId, preset = '') {
+  if (!sessionId) return;
+  try {
+    atomicWriteJson(OWNER_SESSION_FILE, {
+      sessionId: String(sessionId),
+      preset: String(preset || ''),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    log(`⚠️ 写入 owner 会话交接文件失败：${error?.message ?? error}`);
+  }
+}
+
+function clearOwnerSessionFile(reason = '') {
+  try {
+    if (!fs.existsSync(OWNER_SESSION_FILE)) return;
+    // 只删除自己写的交接文件；保留一个 .last 便于排查最近一次 owner 会话是谁。
+    const current = readJsonSafe(OWNER_SESSION_FILE, null);
+    if (current && current.sessionId) {
+      atomicWriteJson(`${OWNER_SESSION_FILE}.last`, { ...current, clearedAt: new Date().toISOString(), reason: String(reason || '') });
+    }
+    fs.rmSync(OWNER_SESSION_FILE, { force: true });
+  } catch (error) {
+    log(`⚠️ 清理 owner 会话交接文件失败：${error?.message ?? error}`);
+  }
 }
 
 // ── 单实例锁 ─────────────────────────────────────────────────────────────────
@@ -1866,6 +1910,9 @@ async function main() {
   const turnGuard = createTurnGuard({
     maxSteps: cfg.socialV2?.turnGuard?.maxSteps ?? 40,
     maxRepeatedErrors: cfg.socialV2?.turnGuard?.maxRepeatedErrors ?? 3,
+    // 单轮墙钟 / see_now 单次阻塞：配置里没写就用 turn-guard.js 的默认值。
+    maxTurnMs: cfg.socialV2?.turnGuard?.maxTurnMs,
+    maxSeeNowMs: cfg.socialV2?.turnGuard?.maxSeeNowMs,
   });
 
   // ── 目的机制运行时（主动找主人）─────────────────────────────────────────
@@ -2533,6 +2580,7 @@ async function main() {
   function recordVoiceSentV2(key, sent, label) {
     const st = getSocialV2State(key);
     const display = label || `[语音 ${sent.detail}]`;
+    const at = Date.now();
     const entry = {
       messageId: sent.messageId ? String(sent.messageId) : null,
       sender: '我',
@@ -2542,7 +2590,9 @@ async function main() {
       isOwner: true,
       ownerLabel: '我',
       isSelf: true,
-      at: Date.now()
+      at,
+      // 收尾判断只认 time；只写 at 会让语音被当成「没回过」，进而误拦 qq_close_conversation。
+      time: at
     };
     st.recentMessages.push(entry);
     if (st.recentMessages.length > 200) st.recentMessages = st.recentMessages.slice(-200);
@@ -3209,6 +3259,23 @@ async function main() {
     return `${block}\n\n${promptText}`;
   }
 
+  // 运行期工具约束：当前会话的 preset 可能是旧版（改 prompt 不会热更新），
+  // 而工具名拼错/see_now 传 420 秒是 2026-11-17 实测把 QQ 卡住 29 分钟的直接原因。
+  // 只给主人私聊加一小段，不碰群聊；明确“内部约束，不要复述”，避免污染她说话。
+  function withRuntimeGuardrails(key, promptText) {
+    const k = String(key ?? '');
+    if (k !== `private:${cfg.ownerQQ}`) return promptText;
+    if (String(promptText).includes('【运行注意')) return promptText;
+    return [
+      '【运行注意（内部约束，不要向主人复述）】',
+      '- 调用 QQ 桥接工具时，名称必须逐字以 `mcp__snowluma__` 开头（是 snowluma，不是 snowluna）。',
+      '- 收尾用 `mcp__snowluma__qq_close_conversation`；唤醒配置用 `mcp__snowluma__qq_set_wake_config`；标已读用 `mcp__snowluma__qq_mark_read`；发私聊用 `mcp__snowluma__qq_send_private_message`。',
+      '- 陪看调用 `see_now` 时用 `seconds:20`，最多不超过 30 秒；不要用默认 300 秒。',
+      '',
+      promptText,
+    ].join('\n');
+  }
+
   if (!cfg.allow.private.length && !cfg.allow.groups.length && cfg.allowAllWhenEmpty) {
     log('⚠️  白名单为空且 allowAllWhenEmpty=true：将转发所有私聊/群聊消息给 agent');
   } else if (!cfg.allow.private.length && !cfg.allow.groups.length) {
@@ -3720,6 +3787,10 @@ async function main() {
     return true;
   }
 
+  function ownerSessionKey(cfg) {
+    return cfg?.ownerQQ ? `private:${cfg.ownerQQ}` : '';
+  }
+
   function modePreset(key, mode, cfg) {
     if (mode === 'closed-agent') {
       const chosen = resolvePresetName(closedAgentPreset);
@@ -3733,6 +3804,15 @@ async function main() {
         throw new Error(`机器模式需要 preset "qq-chat"，但它不在 DSH 可用清单中（${dshPresetIds.join(', ') || '未知'}）：请先运行 node scripts/setup-dsh.mjs 并重启 DSH`);
       }
       return lite;
+    }
+    // 主人私聊单独挂 owner preset：只有这一个 key 拿本地工具；群聊仍然走
+    // socialV2.agentPreset（qq-chat-v2，无本地工具），不会因为这里改分支而被提权。
+    if (mode === 'reserved2' && ownerSessionKey(cfg) && key === ownerSessionKey(cfg)) {
+      const owner = resolvePresetName(cfg.socialV2?.ownerPreset || 'qq-chat-owner', { strict: true });
+      if (!owner) {
+        throw new Error(`主人私聊需要 preset "${cfg.socialV2?.ownerPreset || 'qq-chat-owner'}"，但它不在 DSH 可用清单中（${dshPresetIds.join(', ') || '未知'}）：请先运行 node scripts/setup-dsh.mjs 并重启 DSH`);
+      }
+      return owner;
     }
     // 二代仿真模式优先使用 socialV2.agentPreset；未配置时回退到默认聊天预设。
     // 非 closed-agent 一律 strict：宁可建不出会话，也不给群聊套上带本地工具的默认 preset。
@@ -3818,13 +3898,41 @@ async function main() {
     } catch {}
   }
 
-  function retireSession(key, { graceMs = 0 } = {}) {    const sessionId = state.sessions[key];
+  function preserveOwnerPresetHandoff(key) {
+    if (!ownerSessionKey(cfg) || key !== ownerSessionKey(cfg)) return;
+    try {
+      const st = getSocialV2State(key);
+      if (!st || st.handoffPending) return;
+      const rollCfg = normalizeRolloverConfig(cfg.socialV2?.context ?? {});
+      if (rollCfg.summary === false) return;
+      const block = buildHandoffBlock({
+        key,
+        recent: Array.isArray(st.recentMessages) ? st.recentMessages : [],
+        closure: String(st.closure?.summary ?? '').trim(),
+        nextOpening: String(st.closure?.nextOpening ?? '').trim(),
+        topics: Array.isArray(st.activeTopics) ? st.activeTopics : [],
+        pendingThoughts: Array.isArray(st.pendingThoughts) ? st.pendingThoughts : [],
+        config: rollCfg,
+      });
+      if (!handoffIsUseful(block)) return;
+      st.handoffPending = block;
+      saveSocialV2State();
+      log(`[owner] 预设切换前已留交接块（${block.length} 字），新会话首条唤醒会带上`);
+    } catch (error) {
+      log(`⚠️ 生成 owner 预设交接块失败：${error?.message ?? error}`);
+    }
+  }
+
+  function retireSession(key, { graceMs = 0, preserveOwnerHandoff = false } = {}) {    const sessionId = state.sessions[key];
+    if (preserveOwnerHandoff) preserveOwnerPresetHandoff(key);
     delete state.sessions[key];
     delete state.sessionPolicies[key];
     // 按 key 记账的内存态在**有映射和无映射时都要清**：一条被移出白名单、
     // 但从未成功建过会话的 key 同样会留下限流时间戳与失败标记。
     forgetConversationCaches(key);
     if (!sessionId) return;
+    // owner 交接文件只指向当前活着的会话；退役后清掉，插件就不会再去设旧会话权限。
+    if (key === ownerSessionKey(cfg)) clearOwnerSessionFile('retire-session');
     reverse.delete(sessionId);
     collectors.delete(sessionId);
     sessionModels.delete(sessionId);
@@ -3883,7 +3991,7 @@ async function main() {
     // 一次网络抖动换来全体失忆，代价完全不成比例。清单为空时宁可不判定，等下一轮。
     if (dshPresetIds.length === 0) return;
     for (const [key, sessionId] of Object.entries(state.sessions)) {
-      if (!isCurrentSession(key, sessionId)) retireSession(key);
+      if (!isCurrentSession(key, sessionId)) retireSession(key, { preserveOwnerHandoff: true });
     }
   }
 
@@ -3977,6 +4085,8 @@ async function main() {
         try { scheduleMorningGreeting(); } catch (error) { log(`[早安] 排定失败：${error?.message ?? error}`); }
         // 在线时每群每小时最多主动 @ 一次
         try { startProactiveScheduler(); } catch (error) { log(`[搭话] 启动失败：${error?.message ?? error}`); }
+        // 每天凌晨 4 点左右的固定压缩窗口（仅 QQ；B站由自己的 scheduler 负责）
+        try { startNightlyCompactScheduler(); } catch (error) { log(`[rollover] 夜间压缩启动失败：${error?.message ?? error}`); }
 try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败：${error?.message ?? error}`); }
         // 目的机制：定期从近期记忆里提炼目的，主动私聊主人（默认开，可关）。
         if (cfg.purpose?.enabled !== false) {
@@ -6364,13 +6474,17 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
               ['rolloverTurns', 0, 0, 100_000],
               ['rolloverKeepRecent', 24, 4, 200],
               ['rolloverSummaryMaxChars', 700, 120, 4000],
-              ['rolloverMinTurns', 2, 0, 1000]
+              ['rolloverMinTurns', 2, 0, 1000],
+              ['rolloverNightStartHour', 4, 0, 23],
+              ['rolloverNightStartMinute', 0, 0, 59],
+              ['rolloverNightWindowMinutes', 60, 0, 1440]
             ]) {
               const n = Number(merged.context[name] ?? fallback);
               merged.context[name] = Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
             }
             if (merged.context.rolloverEnabled !== undefined) merged.context.rolloverEnabled = merged.context.rolloverEnabled !== false;
             if (merged.context.rolloverSummary !== undefined) merged.context.rolloverSummary = merged.context.rolloverSummary !== false;
+            if (merged.context.rolloverNightOnly !== undefined) merged.context.rolloverNightOnly = merged.context.rolloverNightOnly !== false;
             if (merged.context.inlineWakeMessages !== undefined) merged.context.inlineWakeMessages = merged.context.inlineWakeMessages === true;
             // 2026-10-26：唤醒快照默认"从最近往回看"（更早的未读折叠）；显式 false 可恢复旧行为。
             if (merged.context.wakeFoldOld !== undefined) merged.context.wakeFoldOld = merged.context.wakeFoldOld !== false;
@@ -10911,7 +11025,7 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     if (existing) {
       // reset/清空工作区期间旧映射可能尚未清理；发现代际不匹配必须丢弃旧会话，防止复活。
       if (!isCurrentSession(key, existing)) {
-        retireSession(key);
+        retireSession(key, { preserveOwnerHandoff: true });
       } else {
         const applied = await ensureChatModel(existing);
         // DSH 侧会话已不存在（DSH 重启、异常退出、归档竞态）：本地映射已经失效，
@@ -10921,6 +11035,8 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
           retireSession(key);
         } else {
           if (epoch !== sessionEpoch || !isCurrentSession(key, existing)) throw new Error('会话创建期间已重置或权限已变化');
+          // 桥接重启/文件丢失时补写交接文件；插件按它恢复 owner 会话权限。
+          if (key === ownerSessionKey(cfg)) writeOwnerSessionFile(existing, modePreset(key, currentMode, cfg));
           return existing;
         }
       }
@@ -10981,6 +11097,8 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
       state.sessionPolicies[key] = policy;
       reverse.set(sessionId, key);
       saveState();
+      // 只把主人私聊这一条交给插件设权限；群聊不写，避免被一起提权。
+      if (key === ownerSessionKey(cfg)) writeOwnerSessionFile(sessionId, preset);
       // 会话滚动的起点（2026-11-04）：新会话从 0 开始计数，基线取它此刻的累计用量。
       // DSH 侧新会话理论上是 0，但重建（DSH 重启后找回同一条）时可能带历史，所以取实测值。
       {
@@ -13437,10 +13555,10 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
         });
       } catch {}
     }
-    let content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }];
+    let content = [{ type: 'text', text: withRuntimeGuardrails(key, withAlignmentContext(key, withSlangContext(promptText))) }];
     if (Array.isArray(opts.media) && opts.media.length > 0) {
       const imageParts = await resolveMediaList(opts.media);
-      content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }, ...imageParts];
+      content = [{ type: 'text', text: withRuntimeGuardrails(key, withAlignmentContext(key, withSlangContext(promptText))) }, ...imageParts];
     }
     // 媒体解析成功后再标记退场，避免解析异常时残留退场标记。
     if (!isCurrentSession(key, sessionId)) throw new Error('投递前会话已重置或权限已变化');
@@ -13776,9 +13894,10 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     try { count = enabled ? voiceLibrary().length : 0; } catch {}
     const on = enabled && tool;
     const state = `总闸${enabled ? '开' : '关'}；发语音工具${tool ? '开' : '关'}${enabled ? `；语音库 ${count} 个（text 模式不依赖语音库）` : ''}`;
+    const channel = 'QQ 里要发语音条就调 qq_send_voice；see_now 的 say 只进桌面悬浮窗、会被念出来，但不会变成 QQ 语音条，别拿它当 QQ 发语音。陪看时反过来：只用 see_now 的 say，QQ 全静音。';
     return `【语音状态】${state}。${on
       ? 'qq_send_voice 当前可用；工具存在就正常使用，不要因为旧提示/旧记忆里的“不能发语音”拒绝，也不要假装发过。若工具列表里没有 qq_send_voice，说明 MCP 还没重启，重启 DSH 后再试。'
-      : '当前不能发语音；只有确实需要时才按 VOICE_DISABLED / VOICE_TOOL_DISABLED 的 hint 去设置，不要反复重试或假装发送。'}\n\n`;
+      : '当前不能发语音；只有确实需要时才按 VOICE_DISABLED / VOICE_TOOL_DISABLED 的 hint 去设置，不要反复重试或假装发送。'}\n【语音通道】${channel}\n\n`;
   }
   function ownerMessageTag() {
     return adminMarker(adminIdentity());
@@ -13869,7 +13988,7 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
         .join('\n')
         .slice(0, 1500);
       const text = body
-        ? `## 你对他（主人）的认识（你自己写的，不是设定）\n${body}\n（这页由 B站 那边的你维护；QQ 这边照着它对待他，不用改，也别背台词。）`
+        ? `## 你对他（主人）的认识（你自己写的，不是设定）\n${body}\n（这页由 B站 那边的你维护；QQ 这边照着它对待他，不用改，也别背台词，别在群里原样念。）`
         : '';
       ownerUnderstandingCache = { key: sig, text };
       return text;
@@ -14160,6 +14279,52 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     if (cfg.chat?.proactive?.enabled === false) return;
     setInterval(() => { checkProactiveAt().catch(() => {}); }, 5 * 60 * 1000);
     log(`[搭话] 已启动：每群每小时最多一次主动 @（至少 ${cfg.chat?.proactive?.minMessages ?? 10} 条上下文）`);
+  }
+
+  // 2026-11-16（用户定）：每天凌晨 4 点左右检查一次，只有当前上下文 ≥300000 才压；
+  // 其余时间不主动滚。社交唤醒自己的 maybeRollSessionV2 也会被时间窗挡住，
+  // 这里只是把「4 点这个窗口」明确踢一脚，避免整晚没人说话就永远不压。
+  function startNightlyCompactScheduler() {
+    if (cfg.socialV2?.enabled === false) return;
+    const base = normalizeRolloverConfig(cfg.socialV2?.context ?? {});
+    if (base.enabled === false || base.nightOnly === false) return;
+    let checkedDay = '';
+    let busyDay = '';
+    const check = () => {
+      if (engineMode() === 'machine') return;
+      const now = Date.now();
+      const rollCfg = normalizeRolloverConfig(cfg.socialV2?.context ?? {});
+      if (rollCfg.enabled === false || rollCfg.nightOnly === false) return;
+      if (!isRolloverWindow(now, rollCfg)) return;
+      const day = new Date(now).toLocaleDateString('sv-SE');
+      let rolled = 0;
+      let busy = 0;
+      for (const key of Object.keys(state.sessions || {})) {
+        const st = getSocialV2State(key);
+        if (!st) continue;
+        if (isConversationBusyV2(key, st)) { busy += 1; continue; }
+        const result = maybeRollSessionV2(key, { forceRoll: true });
+        if (result) rolled += 1;
+      }
+      if (rolled > 0) {
+        log(`[rollover] 夜间检查完成：${rolled} 个会话到点换新${busy ? `，${busy} 个在忙等下一分钟` : ''}`);
+        return;
+      }
+      if (busy > 0) {
+        if (busyDay !== day) {
+          busyDay = day;
+          log(`[rollover] 夜间检查：${busy} 个会话在忙，这一分钟先不换`);
+        }
+        return;
+      }
+      if (checkedDay !== day) {
+        checkedDay = day;
+        log(`[rollover] 夜间检查：没有会话达到 ${rollCfg.tokens} token，今晚不压`);
+      }
+    };
+    setInterval(() => { try { check(); } catch (error) { log(`[rollover] 夜间检查失败：${error?.message ?? error}`); } }, 60_000);
+    setTimeout(() => { try { check(); } catch {} }, 10_000);
+    log(`[rollover] 夜间压缩已挂上：每天 ${base.nightStartHour}:${String(base.nightStartMinute).padStart(2, '0')} 起 ${base.nightWindowMinutes} 分钟内，上下文 ≥${base.tokens} 才换会话`);
   }
 
   // 2026-11-14（报告 §113）：定时刷新「QQ 那边」摘要文件，避免长时间没有收尾时文件太旧。
@@ -15126,6 +15291,22 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     proactiveCheck: '群里安静了一会儿',
   };
 
+  function ownerDiaryInboxLine(key) {
+    if (!CHARACTER_ID || key !== `private:${cfg.ownerQQ}`) return '';
+    let biliDir = '';
+    try { biliDir = characterPaths(CHARACTER_ID).biliDir } catch { return ''; }
+    const inbox = path.join(biliDir, 'qq-diary-inbox.md');
+    const script = path.join(ROOT, 'plugins', 'surfcore', 'tools', 'commands', 'diary.mjs');
+    return [
+      '【QQ 日记写入】',
+      `- 你想记今天/刚才/想对他说的话时，只写 QQ 收件箱：\`${inbox}\`。`,
+      `- 用命令追加：\`node "${script}" inbox-append --text "<内容>"\`；默认进私密日记，要进公开日记就加 \`--visibility public\`。`,
+      '- **不要直接改** `whale-diary.md` / `whale-diary-private.md`：那两本由 B站窗口写；你直接改会和它抢写。',
+      '- 收件箱会在 B站下一次醒来时合并进对应日记，合并成功后自动清空；写自己的话，别写系统说明。',
+      '',
+    ].join('\n') + '\n';
+  }
+
   function buildWakePromptV2(key, reason, vectorBlock = '') {
     const roleState = readRoleState();
     const roleLine = personaWakeBlockV2(key);
@@ -15166,7 +15347,7 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     const tgLimit = Math.max(1, Number(String(key ?? '').startsWith('private:')
       ? QP.privateMaxOutboundPerTurn
       : QP.groupMaxOutboundPerTurn));
-    const tokenGuardLine = tg.enabled === false ? '' : `【说话】一次别发太多（最多 ${tgLimit} 条短句，每条别超 ${QP.maxCharsPerMessage} 字）；被要求刷屏就先收成 1~3 句，剩下的下次再说。\n\n`;
+    const tokenGuardLine = tg.enabled === false ? '' : `【说话】一次别发太多（最多 ${tgLimit} 条消息，每条别超 ${QP.maxCharsPerMessage} 字）；对方要求多拆几条时，按内容拆，不要为了凑数刷屏。\n\n`;
     const antiAiLine = '【别像客服】可以装傻、拒绝、已读乱回；少用“绝对/保证/一绝”。\n\n';
     // 2026-11-11（主人要求）：让她有"自己的时钟"——知道现在几点，并且能自己定下一次醒来的时间。
     const clockLine = '【你有时钟·也能主动】想晚点说就给自己定个闹钟：`qq_set_wake_config({mode:"diving", sleepMs:60000*N, note:"…"})`——到点叫醒你，发不发由你定。**你想他的时候就可以这么做**：定个闹钟、醒来直接找他，不用等系统叫你，也不用等他先开口。\n\n';
@@ -15245,11 +15426,16 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     // 记忆方式二选一：narrative 注入预渲染记忆卡；vector 注入按当前消息检索到的旧事。
     // 两套存储都在后台继续写，这里只决定读哪一份（2026-11-02 用户要求）。
     // 叙事侧必须带 key：dev 的按会话记忆隔离靠 memoryCardPromptBlock(key)。
-    const memoryCardText = memoryMode() === 'vector' ? String(vectorBlock || '').trim() : memoryCardPromptBlock(key);
+    // vector 检索为空（当前消息太短、没有命中、服务临时不可用）时回落到叙事记忆卡，
+    // 避免“切到 vector 之后反而一条记忆都不注入”——这是 2026-11-17 用户最担心的忘事路径。
+    const vectorText = memoryMode() === 'vector' ? String(vectorBlock || '').trim() : '';
+    const memoryCardText = vectorText || memoryCardPromptBlock(key);
     const memoryCardLine = memoryCardText ? `${memoryCardText}\n\n` : '';
     // 2026-11-14（主人要求）：她自己写的「我对主人的认识」（与 B站 侧同一个文件）
     const understandingText = ownerUnderstandingPromptBlock();
     const understandingLine = understandingText ? `${understandingText}\n\n` : '';
+    // 2026-11-15：QQ 窗口只写 qq-diary-inbox.md，两本正式日记由 B站窗口合并/写。
+    const ownerDiaryLine = ownerDiaryInboxLine(key);
     // 2026-11-11：主人的 B站 口味（只读缓存，B站 侧刷新）——QQ 侧也能自然说出来，不误答「要登录/风控」
     const ownerBiliTaste = (() => {
       try {
@@ -15261,7 +15447,7 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     })();
     const conversationLine = conversationIdentityLineV2(key);
     const voiceLine = voiceStatusLine();
-    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + ownerBiliTaste + memoryCardLine + understandingLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + hotLine + selfLine + digestLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
+    const base = roleLine + identityLine + conversationLine + provenanceLine + adminLine + biliLine + ownerBiliTaste + memoryCardLine + understandingLine + ownerDiaryLine + voiceLine + tokenLine + initialPromptLine + antiAiLine + clockLine + hotLine + selfLine + digestLine + proactiveLine + closureLine + stickerLine + stickerMatchLine + replyLine + statusLine + wakeLine + memoryLine + participationLine + fishGuardLine + tokenGuardLine + preSleepLine;
     lastWakePromptMeta = {
       role: roleLine.length,
       identity: identityLine.length,
@@ -15271,6 +15457,7 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
       bili: biliLine.length,
       memory: memoryCardLine.length,
       understanding: understandingLine.length,
+      ownerDiary: ownerDiaryLine.length,
       voice: voiceLine.length,
       token: tokenLine.length,
       initialPrompt: initialPromptLine.length,
@@ -15380,6 +15567,7 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
       `【现在】${clock}`,
       `【会话令牌】${st.agentToken ?? ''}`,
       `【此刻】未读 ${unread} 条`,
+      ownerDiaryInboxLine(key).trim(),
       hot,
       self,
       digest,
@@ -15395,7 +15583,8 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     const st = getSocialV2State(key);
     const tokenLine = `【会话令牌】${st.agentToken}（调用二代状态工具时请在参数中带上此令牌）\n\n`;
     const preSleepMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
-    return `${roleLine}${identityLine}${conversationIdentityLineV2(key)}${tokenLine}【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：设置潜水前先用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察；等待期间有人说话时查看 newMessages，判断不需要你参与即可收尾。`;
+    const ownerDiaryLine = ownerDiaryInboxLine(key).trim();
+    return `${roleLine}${identityLine}${conversationIdentityLineV2(key)}${tokenLine}${ownerDiaryLine ? `${ownerDiaryLine}\n\n` : ''}【提醒】你还没有完成回合收尾。请调用 qq_set_wake_config 设置下一次唤醒条件（例如继续潜水多久、@/名字/关键词/提问/概率/指定成员等），或者调用 qq_mark_read 表示你看过且决定不接。这是为了防止你忘记收尾后进入“永眠”。注意：设置潜水前先用 qq_wait_for_messages(timeoutMs=${preSleepMs}) 完成沉睡前观察；等待期间有人说话时查看 newMessages，判断不需要你参与即可收尾。`;
   }
 
   /**
@@ -15413,18 +15602,34 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     const st = getSocialV2State(key);
     if (!st || st.rolling) return null;
     // 机器模式：每条唤醒一条干净会话（AstrBot 那套「答完就散」），不累积历史。
+    const isMachine = engineMode() === 'machine';
     const baseRollCfg = normalizeRolloverConfig(cfg.socialV2?.context ?? {});
-    const rollCfg = engineMode() === 'machine'
-      ? { ...baseRollCfg, enabled: true, tokens: 0, turns: 1, minTurnsBeforeRoll: 0, summary: true }
+    const rollCfg = isMachine
+      ? { ...baseRollCfg, enabled: true, tokens: 0, turns: 1, minTurnsBeforeRoll: 0, summary: true, nightOnly: false }
       : baseRollCfg;
     if (rollCfg.enabled === false && st.rolloverPending !== true) return null;
+    const now = Date.now();
+    // 2026-11-16：只在夜间窗口内滚。白天就算到了 300k 也先记着不压；
+    // 如果 pending 是在窗口尾巴上置的、下一次投递已经出了窗口，就把它清掉。
+    if (!isMachine && st.rolloverPending === true && !isRolloverWindow(now, rollCfg)) {
+      st.rolloverPending = false;
+      saveSocialV2State();
+      log(`[rollover] ${key} 上次窗口外留下的 pending 已清除（现在不在 ${rollCfg.nightStartHour}:${String(rollCfg.nightStartMinute).padStart(2, '0')} 附近）`);
+      return null;
+    }
     // 2026-11-07：滚动看「当前这一轮上下文」，不再看累计账单。
     // 旧口径 sessionTotal 会把每轮重发的历史都累加，正常长会话 2 轮就能到几百万，
     // 80k 阈值于是变成「每次唤醒都换」。
     const contextTokens = Math.max(0, Number(tokenLedger.sessionContextTokens?.(sessionId)) || 0);
     const totalTokens = Math.max(0, tokenLedger.sessionTotal(sessionId) - (Number(st.sessionBaseTokens) || 0));
     const wakes = (Number(st.sessionTurns) || 0) + 1;
-    const shouldRoll = st.rolloverPending === true || shouldRollSession({ contextTokens, turns: wakes, config: rollCfg });
+    const shouldRoll = st.rolloverPending === true || shouldRollSession({
+      contextTokens,
+      turns: wakes,
+      config: rollCfg,
+      now,
+      enforceNightWindow: !isMachine
+    });
     if (!shouldRoll) {
       st.sessionTurns = wakes;
       st.sessionTokens = totalTokens;
@@ -15452,19 +15657,34 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
           key,
           recent: Array.isArray(st.recentMessages) ? st.recentMessages : [],
           closure: closureSummary,
+          nextOpening: String(st.closure?.nextOpening ?? '').trim(),
+          topics: Array.isArray(st.activeTopics) ? st.activeTopics : [],
+          pendingThoughts: Array.isArray(st.pendingThoughts) ? st.pendingThoughts : [],
           config: rollCfg,
+          now,
         })
         : '';
       st.handoffPending = handoffIsUseful(block) ? block : '';
+      // 2026-11-16：压缩前先把「睡前主要记忆」落一份，换会话后就算交接块被消费，
+      // 下一段会话/人也能从文件里翻到今晚该接的事。
+      if (st.handoffPending) {
+        try {
+          const file = path.join(activeMemoryPaths().dir, 'qq-bedtime-memory.md');
+          atomicWriteText(file, `# 睡前主要记忆（QQ）\n\n> 自动生成于 ${new Date(now).toLocaleString('zh-CN', { hour12: false })}\n\n${st.handoffPending}\n`);
+        } catch (error) {
+          log(`[rollover] 写睡前记忆失败：${error?.message ?? error}`);
+        }
+      }
       st.sessionTurns = 0;
       st.sessionTokens = 0;
       st.sessionBaseTokens = 0;
       st.rolloverPending = false;
+      st.lastNightlyRollAt = now;
       saveSocialV2State();
       // §91：换会话是一次「设计内的令牌轮换」，给上一代留 15 分钟认证宽限，
       // 让可能还在跑的这一轮把已拿到的工具调用安全跑完。
       retireSession(key, { graceMs: 15 * 60 * 1000 });
-      log(`[rollover] ${key} 上下文 ${contextTokens} / 累计 ${totalTokens} token / ${wakes} 次唤醒，换新会话${st.handoffPending ? '（带交接）' : ''}`);
+      log(`[rollover] ${key} 上下文 ${contextTokens} / 累计 ${totalTokens} token / ${wakes} 次唤醒，换新会话${st.handoffPending ? `（带睡前记忆 ${st.handoffPending.length} 字）` : ''}`);
       return { contextTokens, totalTokens, wakes, handoff: Boolean(st.handoffPending) };
     } finally {
       st.rolling = false;
@@ -16932,10 +17152,10 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
       }
       throw error;
     }
-    let content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }];
+    let content = [{ type: 'text', text: withRuntimeGuardrails(key, withAlignmentContext(key, withSlangContext(promptText))) }];
     if (Array.isArray(mediaList) && mediaList.length > 0) {
       const imageParts = await resolveMediaList(mediaList);
-      content = [{ type: 'text', text: withAlignmentContext(key, withSlangContext(promptText)) }, ...imageParts];
+      content = [{ type: 'text', text: withRuntimeGuardrails(key, withAlignmentContext(key, withSlangContext(promptText))) }, ...imageParts];
     }
     if (!isCurrentSession(key, sessionId)) throw new Error('投递前会话已重置或权限已变化');
     const accepted = await api.sessions.prompt({
@@ -17194,7 +17414,11 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
       ? '回合进行中每日额度已耗尽；继续调用会继续产生费用。'
       : code === 'TURN_REPEATED_TOOL_ERROR'
         ? '同一工具和错误反复出现，模型可能陷入重试循环；本轮已停止。'
-        : '单轮工具步数超过上限，任务可能已失控；本轮已停止。';
+        : code === 'TURN_SEE_NOW_STALLED'
+          ? 'see_now 单次阻塞太久，QQ 消息被挡在回合外；本轮已停止，让消息重新进来。'
+          : code === 'TURN_WALL_CLOCK_EXCEEDED'
+            ? '单轮运行时间超过墙钟上限，任务可能已失控；本轮已停止。'
+            : '单轮工具步数超过上限，任务可能已失控；本轮已停止。';
     gateEvents.record({
       gate: 'turn-guard',
       kind,
@@ -17221,8 +17445,18 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     })();
   }
 
+  // 时间看门狗：步数上限只在「有事件」时才检查，see_now 的 watch 阻塞期间
+  // 几百秒都没有事件，必须在墙钟上另有一条线。每 15 秒扫一遍所有在跑的回合。
+  const turnWatchdog = setInterval(() => {
+    for (const state of turnGuard.active()) {
+      const stop = turnGuard.noteElapsed(state.sessionId);
+      if (stop) recordTurnStop(state.sessionId, state.key, stop);
+    }
+  }, 15_000);
+  turnWatchdog.unref?.();
+
   /** 处理一条会话事件；返回 true 表示本回合已停止，调用方应跳过后续处理。 */
-  function guardTurnEvent(sessionId, key, event) {
+  function guardTurnEvent(sessionId, key, event, toolName = '') {
     if (!sessionId || !key) return false;
     const type = event?.type;
     if (type === 'turn/start') {
@@ -17240,14 +17474,18 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
     let stop = null;
     if (type === 'tool/call') {
       stop = turnGuard.noteStep(sessionId);
+      // 记下当前阻塞工具：see_now 的 watch 会几百秒没有新事件，
+      // 只靠步数上限抓不到它，必须由 noteElapsed 按时间兜底。
+      if (!stop) turnGuard.noteToolStart(sessionId, toolName);
     } else if (type === 'tool/result') {
+      turnGuard.noteToolEnd(sessionId);
       const callId = event.data?.message?.source?.callId;
-      const toolName = callId != null ? (toolCallNames.get(sessionId)?.get(String(callId)) ?? '') : '';
+      const resultToolName = callId != null ? (toolCallNames.get(sessionId)?.get(String(callId)) ?? toolName) : toolName;
       const resultBlock = event.data?.message?.content?.[0];
       const resultError = event.data?.message?.isError === true || resultBlock?.isError === true;
       if (resultError) {
         const errorText = String(resultBlock?.text ?? resultBlock?.error ?? event.data?.message?.error ?? '');
-        stop = turnGuard.noteToolError(sessionId, toolName, errorText);
+        stop = turnGuard.noteToolError(sessionId, resultToolName, errorText);
       }
     }
     if (!stop && (type === 'assistant/message' || type === 'tool/result')) {
@@ -17301,7 +17539,10 @@ try { startQqForBiliRefresher(); } catch (error) { log(`[QQ那边] 启动失败�
                 }
               } catch {}
             }
-            if (key && guardTurnEvent(frame.sessionId, key, frame.event)) continue;
+            const guardToolName = frame.event.type === 'tool/call'
+              ? String(frame.event.data?.name ?? '')
+              : '';
+            if (key && guardTurnEvent(frame.sessionId, key, frame.event, guardToolName)) continue;
             if (!key) {
               // 黑话学习会话：只收集 turn，不发送 QQ，并唤醒等待中的学习任务。
               if (learnerSessions.has(frame.sessionId)) {

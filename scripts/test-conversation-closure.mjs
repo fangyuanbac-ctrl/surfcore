@@ -100,6 +100,23 @@ test('对方明确在提问、我还没答 → 不收尾，且 closeGate 硬拦'
   assert.equal(gate.reason, 'open-question');
 });
 
+test('语音回复也算答过：只有 at 的语音不能被当成没回', () => {
+  const voice = {
+    isSelf: true, sender: '我', seq: 42,
+    plain: '[语音 8秒] 还在的，没溜', text: '[语音 8秒] 还在的，没溜',
+    at: now - 60 * 1000,
+    // 刻意不写 time：历史语音记录就是这么落盘的
+  };
+  const a = assessConversationClosure({
+    kind: 'private',
+    messages: [msg('还在看吗', { minutesAgo: 2 }), voice],
+    now,
+  });
+  assert.equal(a.signals.awaitingTheirAnswer, false);
+  assert.equal(a.signals.lastSelfKind, 'substantive');
+  assert.equal(closeGate(a, {}).blocked, false);
+});
+
 test('对方道别：即使我最后一句是普通内容，也判收尾', () => {
   const a = assessConversationClosure({
     kind: 'group',

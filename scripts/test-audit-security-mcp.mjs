@@ -181,6 +181,46 @@ test('object-shaped bridge errors are rendered readably, not as [object Object]'
   assert.match(text, /send\/rejected|阻止发送/, `应带出对象里的原因：${text}`);
 });
 
+test('long-poll object errors keep the reason and add an explicit no-retry hint', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { PassThrough } = await import('node:stream');
+  const fakeHttp = {
+    request(options, callback) {
+      const req = new EventEmitter();
+      req.destroy = () => {};
+      req.end = () => {
+        queueMicrotask(() => {
+          const res = new PassThrough();
+          res.statusCode = 200;
+          res.complete = false;
+          callback(res);
+          res.end(JSON.stringify({
+            ok: false,
+            error: {
+              code: 'wait/active',
+              message: '该会话已有一个等待中的 qq_wait_for_messages，请等待它结束',
+            },
+          }));
+        });
+      };
+      return req;
+    }
+  };
+  const callTool = loadSnowlumaTools(
+    async () => { throw new Error('wait 不得走 fetch'); },
+    null,
+    fakeHttp
+  );
+  const result = await callTool('qq_wait_for_messages', {
+    key: 'private:1', token: 'fixture-token', purpose: 'messages', timeoutMs: 300000, quietMs: 10000,
+  });
+  assert.equal(result.isError, true);
+  const text = String(result.content[0].text);
+  assert.ok(!/\[object Object\]/.test(text), `长轮询对象错误不得再吞成 [object Object]：${text}`);
+  assert.match(text, /已有一个等待中/);
+  assert.match(text, /不要重复调用 qq_wait_for_messages/);
+});
+
 // 回归：桥接用 200 + {ok:false} 表达业务失败（例如发送被安全审计拦截）。
 // agentApi 若不检查 body.ok，就会把「被拦截」当成「发送成功」报给模型 ——
 // 模型据此认为消息已发出，既不再重试也不告诉用户，是典型的静默错误。

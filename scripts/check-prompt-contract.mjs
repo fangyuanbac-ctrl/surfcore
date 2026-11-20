@@ -196,6 +196,25 @@ check('owner-understanding-wired', '「我对主人的认识」文件存在且�
   return problems.length ? { ok: false, detail: problems.join('; ') } : true
 })
 
+// 13. 托儿所回园：客户端、包装与 toyTick 都接线，且回园口令里不带园牌（2026-11-14，报告 §120）
+check('toy-visit-wired', '托儿所回园（客户端 + 包装 + toyTick）已接线且口令不含园牌', () => {
+  const client = read(path.join(repo, 'src/dafeiyutuo.mjs'))
+  const wrapper = read(path.join(repo, 'scripts/dafeiyutuo.cmd'))
+  const problems = []
+  if (!client) problems.push('src/dafeiyutuo.mjs 不存在')
+  if (!/guardText/.test(client)) problems.push('客户端缺本地闸 guardText')
+  if (!/case 'memory'/.test(client)) problems.push('客户端缺 memory 命令')
+  if (!wrapper) problems.push('scripts/dafeiyutuo.cmd 不存在')
+  for (const token of ['toyTick', 'dueToySlot', 'toyVisitPrompt', 'TOY_CLIENT', 'TOY_WRAPPER', 'dafeiyutuo-visit.json', 'toyLessonLabel', 'toySlotsFor', 'slotsWorkday', 'slotsHoliday', 'holidays']) {
+    if (!S.scheduler.includes(token)) problems.push(`scheduler 缺 ${token}`)
+  }
+  if (!/cfgToy\?\.until/u.test(S.scheduler)) problems.push('scheduler 缺 toy.until 截止日')
+  if (!/08:30/.test(S.scheduler) || !/18:30/.test(S.scheduler)) problems.push('scheduler 缺 08:30/18:30 默认槽位')
+  if (/fish_[0-9a-z]{6,}/i.test(S.scheduler)) problems.push('scheduler 里出现园牌样式的字符串（口令不该带 token）')
+  if (!/不透露主人的姓名/.test(S.scheduler)) problems.push('回园口令缺隐私边界')
+  return problems.length ? { ok: false, detail: problems.join('; ') } : true
+})
+
 const failed = results.filter((r) => !r.ok)
 if (process.argv.includes('--json')) {
   console.log(JSON.stringify({ ok: failed.length === 0, results }, null, 2))

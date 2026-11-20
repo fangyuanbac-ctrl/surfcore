@@ -349,6 +349,73 @@ export function apply(ctx) {
     pluginLog('token 用量采集监听注册失败：', String(error?.message ?? error));
   }
 
+  // ── QQ 主人私聊的 DSH 权限 ────────────────────────────────────────────────
+  // 桥接建好 private:<ownerQQ> 会话后写 state/qq-owner-session.json；
+  // 插件只认这一条 sessionId，把它切到 danger-full-access。群聊不会写进这个文件，
+  // 因此不会因为“某个 QQ 会话用了 owner preset”而被一起提权。
+  const QQ_OWNER_SESSION_FILE = path.join(QQ_STATE_DIR(), 'qq-owner-session.json');
+  let qqOwnerPermissionTimer = null;
+  let qqOwnerSessionOff = null;
+  let qqOwnerApplying = false;
+  let qqOwnerLastSession = '';
+  let qqOwnerLastFailureLogAt = 0;
+
+  function readQqOwnerSessionFile() {
+    try {
+      const value = JSON.parse(fs.readFileSync(QQ_OWNER_SESSION_FILE, 'utf8'));
+      return value && typeof value === 'object' ? value : null;
+    } catch { return null; }
+  }
+
+  async function applyQqOwnerPermission(where = 'tick') {
+    if (qqOwnerApplying) return { ok: false, reason: 'busy' };
+    const record = readQqOwnerSessionFile();
+    const sessionId = String(record?.sessionId ?? '').trim();
+    // 只处理 owner preset 的会话；如果桥接换了别的 preset，文件里会写清楚，
+    // 这里不猜、不把群聊会话当成 owner。
+    if (!sessionId || String(record?.preset ?? '') !== 'qq-chat-owner') return { ok: false, reason: 'no-owner-session' };
+    const target = String(readUnified().config?.socialV2?.ownerPermission ?? 'danger-full-access');
+    qqOwnerApplying = true;
+    try {
+      let result = applySessionPermission(ctx, sessionId, target, (message) => pluginLog(message));
+      // DSH 重启后会话可能还没挂进 ctx.sessions；inspect 一次再重试，和 B站权限路由同款。
+      if (!result.ok && result.reason === 'session-not-active' && ctx.sessionController?.inspect) {
+        try { await ctx.sessionController.inspect(sessionId); } catch (error) {
+          pluginLog(`[QQ owner 权限] inspect ${sessionId} 失败：${String(error?.message ?? error).slice(0, 160)}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        result = applySessionPermission(ctx, sessionId, target, (message) => pluginLog(message));
+      }
+      if (result.ok) {
+        if (result.changed || sessionId !== qqOwnerLastSession) {
+          pluginLog(`[QQ owner 权限] ${sessionId} → ${target}${result.changed ? '' : '（已是该档位）'}`);
+        }
+        qqOwnerLastSession = sessionId;
+      } else if (result.reason !== 'session-not-active' && Date.now() - qqOwnerLastFailureLogAt > 5 * 60_000) {
+        qqOwnerLastFailureLogAt = Date.now();
+        pluginLog(`[QQ owner 权限] ${where} 设置失败：${result.reason}${result.error ? ` — ${result.error}` : ''}`);
+      }
+      return result;
+    } finally {
+      qqOwnerApplying = false;
+    }
+  }
+
+  try {
+    if (typeof ctx.on === 'function') {
+      qqOwnerSessionOff = ctx.on('session/created', (session) => {
+        const record = readQqOwnerSessionFile();
+        if (!record?.sessionId || String(session?.id ?? '') !== String(record.sessionId)) return;
+        void applyQqOwnerPermission('session/created');
+      });
+    }
+  } catch (error) {
+    pluginLog('[QQ owner 权限] 注册 session/created 监听失败：', String(error?.message ?? error));
+  }
+  qqOwnerPermissionTimer = setInterval(() => { void applyQqOwnerPermission('tick'); }, 15_000);
+  qqOwnerPermissionTimer.unref?.();
+  void applyQqOwnerPermission('startup');
+
   // 启动时先重建身份对齐提示块（bridge 与 B站调度器都读它）。
   try { writeAlignmentBriefs(); } catch (error) { pluginLog('启动时写对齐简报失败：', error?.message ?? error); }
 
@@ -4359,6 +4426,8 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     try { updates.dispose(); } catch {}
     try { petPurpose.stop?.(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);
+    if (qqOwnerPermissionTimer) clearInterval(qqOwnerPermissionTimer);
+    try { qqOwnerSessionOff?.(); } catch {}
     try { sessionEventOff?.(); } catch {}
     try { billing.dispose(); } catch {}
     try { tokenBudget.dispose(); } catch {}

@@ -208,9 +208,10 @@ export function loadFishGuardState(file = FISH_GUARD_FILE) {
     state.daily ??= {}
     state.likeFailed ??= {}
     state.fishGuardLog ??= []
+    state.topFloor ??= {}
     return state
   } catch {
-    return { version: 1, liked: {}, gathered: {}, daily: {}, likeFailed: {}, fishGuardLog: [] }
+    return { version: 1, liked: {}, gathered: {}, daily: {}, likeFailed: {}, fishGuardLog: [], topFloor: {} }
   }
 }
 
@@ -219,7 +220,7 @@ export function saveFishGuardState(state, file = FISH_GUARD_FILE) {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     // 只保留 30 天记录，避免文件无限膨胀
     const cutoff = Date.now() - 30 * 86400000
-    for (const bucket of ['liked', 'gathered']) {
+    for (const bucket of ['liked', 'gathered', 'topFloor']) {
       for (const [key, at] of Object.entries(state[bucket] ?? {})) {
         if (new Date(at).getTime() < cutoff) delete state[bucket][key]
       }

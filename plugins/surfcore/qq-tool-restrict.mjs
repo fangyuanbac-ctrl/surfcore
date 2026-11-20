@@ -1,8 +1,13 @@
 // QQ 桥接安全硬边界：只允许 QQ MCP 工具与少量无害模型侧工具。
 //
-// 本文件是 surfcore bundle 里的**唯一权威实现**，由 qq-chat / qq-chat-v2 两个
-// agent preset 的 qq-tool-restrict 行共同引用（dsh/agent-presets/<preset>/qq-tool-restrict.mjs
+// 本文件是 surfcore bundle 里的**唯一权威实现**，由 qq-chat / qq-chat-v2 /
+// qq-chat-owner 三个 agent preset 的 qq-tool-restrict 行共同引用（dsh/agent-presets/<preset>/qq-tool-restrict.mjs
 // 只是个 re-export 壳，避免出现两份会漂移的实现）。
+//
+// qq-chat-owner 是唯一例外：它只由桥接选中主人私聊（private:<ownerQQ>），
+// 配置 allowLocalTools: true，只放行 OWNER_LOCAL_TOOL_NAMES 里那 8 个本地执行面，
+// 外加 OWNER_ONLY_PLUGIN_TOOLS 里的 see_now（抓屏只给主人私聊，群聊永远不放）；
+// 群聊与其它仿真会话仍走全量限制，不拥有任何本地工具。
 //
 // 为什么引用方式是「包名/子路径」而不是 `./qq-tool-restrict.mjs`（DSH 0.1.7 的机制变化）：
 //   0.1.5 的 preset 是 ~/.dsh/.agent-presets/<preset>/ 目录，相对名按 preset 目录解析；
@@ -18,7 +23,8 @@
 //  1) 用 tools.restrict 把本地执行/文件类工具与开发工具从**工具清单**里隐藏（注册期）；
 //  2) 用 tools.guard 白名单兜底：任何不在允许范围内的工具，执行时一律拒绝。
 //
-// ⚠️ 第 1 条是铁律 L7 的落点，不是"附注"：仿真会话的 preset 永不包含本地工具。
+// ⚠️ 第 1 条是铁律 L7 的落点，不是"附注"：**群聊仿真会话**的 preset 永不包含本地工具
+//    （owner 私聊是唯一例外，见 qq-chat-owner 的 allowLocalTools 配置）。
 //    `tools.guard` 只能拒绝**执行**，工具名仍会出现在模型的 schema 里——
 //    那既不满足"仿真会话不得拥有本地执行能力"的注册期要求，也会诱导模型去调它。
 //    所以本地工具必须同时出现在下面的 restrict 名单里。
@@ -173,6 +179,13 @@ const SAFE_PREFIXES = [
   'mcp__web-search-safe__',
 ]
 
+// 模型侧偶发的命名空间拼写错误：2026-11-17 04:54 她把
+// `mcp__snowluma__qq_set_wake_config` 拼成了 `mcp__snowluna__...`，
+// 被下面的执行期白名单拒绝。真正的原因是拼写，不是白名单少放了权限；
+// 这里把拒绝原因写成可执行的纠正提示，避免模型只看到“不在白名单”就放弃。
+const MISSPELLED_NAMESPACE = 'mcp__snowluna__'
+const CORRECT_NAMESPACE = 'mcp__snowluma__'
+
 // 无害模型侧工具：ask_user_question 用于把问题转给管理员/用户，
 // todo_write 仅维护任务列表。若后续 preset 不再挂载这些工具，保留无害。
 const SAFE_EXACT = new Set([
@@ -192,7 +205,34 @@ const SAFE_EXACT = new Set([
 export const SAFE_EXACT_TOOLS = Object.freeze([...SAFE_EXACT])
 export const SAFE_TOOL_PREFIXES = Object.freeze([...SAFE_PREFIXES])
 
-export function apply(ctx) {
+// 主人私聊预设（qq-chat-owner）允许的本地执行面。
+// 这张表只对 config.allowLocalTools: true 生效；qq-chat / qq-chat-v2 永远走
+// 上面的全量限制，群聊不会因为这里新增名字而拿到任何本地工具。
+// 故意不包含 subagent / workflow / plugin_manager / schedule_* / dev_*：
+// 那些不是“读写文件、跑命令”，而是派生 agent、装插件、无人值守调度，
+// 风险面远大于主人私聊需要的本地执行。
+export const OWNER_LOCAL_TOOL_NAMES = Object.freeze([
+  'pwsh', 'bash',
+  'read', 'read_image', 'write', 'edit',
+  'glob', 'grep',
+])
+
+// 主人私聊专属的插件能力。不是 DSH 官方工具，不能混进 RESTRICTED_TOOL_NAMES
+// （那会被 test-preset-local-tools 当成拼错的假名）；但群聊/仿真会话仍必须在
+// 注册期隐藏，否则模型会看到它、反复调用、被守卫拒绝。
+// see_now 抓的是整块桌面，不是“无害模型侧工具”，绝不能放进 SAFE_EXACT。
+const OWNER_ONLY_PLUGIN_TOOLS = Object.freeze(['see_now'])
+export const OWNER_ONLY_PLUGIN_NAMES = OWNER_ONLY_PLUGIN_TOOLS
+
+export function apply(ctx, config = {}) {
+  const allowLocalTools = config?.allowLocalTools === true
+  const ownerAllowed = new Set([...OWNER_LOCAL_TOOL_NAMES, ...OWNER_ONLY_PLUGIN_TOOLS])
+  // owner 模式只限制“本地工具之外”的已知危险全局工具；群聊/simulation 模式
+  // 继续限制全表（第 1 条铁律 L7 的落点不变），并额外隐藏 owner-only 插件能力。
+  const restrictedNames = allowLocalTools
+    ? KNOWN_DANGEROUS_GLOBAL_TOOLS.filter((name) => !ownerAllowed.has(name))
+    : [...KNOWN_DANGEROUS_GLOBAL_TOOLS, ...OWNER_ONLY_PLUGIN_TOOLS]
+
   // 1) 把已知危险全局工具从 schema 隐藏（restrict 只影响继承的全局层，
   //    不会误删 preset 自己注册的 scoped 工具）。
   // 逐个 restrict：当前 DSH 版本不存在的工具名会单独抛错并跳过，
@@ -208,7 +248,7 @@ export function apply(ctx) {
   const restricted = new Set()
   function restrictAvailable(report = false) {
     const skipped = []
-    for (const name of KNOWN_DANGEROUS_GLOBAL_TOOLS) {
+    for (const name of restrictedNames) {
       if (restricted.has(name)) continue
       // 先登记再 restrict：restrict 可能同步触发 tools/change，避免重入时重复安装。
       restricted.add(name)
@@ -235,15 +275,22 @@ export function apply(ctx) {
   })
   if (skipped.length) {
     const list = skipped.length > 8 ? `${skipped.slice(0, 8).join(', ')} 等` : skipped.join(', ')
-    console.error(`[qq-tool-restrict] 跳过 ${skipped.length}/${KNOWN_DANGEROUS_GLOBAL_TOOLS.length} 个当前版本不存在的工具名：${list}（执行期白名单仍生效）`)
+    console.error(`[qq-tool-restrict] 跳过 ${skipped.length}/${restrictedNames.length} 个当前版本不存在的工具名：${list}（执行期白名单仍生效）`)
   }
 
   // 2) 执行期白名单：任何不在允许范围内的工具调用都会被拒绝。
   ctx.tools.guard((exec) => {
     const name = exec?.name
     if (typeof name !== 'string' || name.length === 0) return '工具名无效，已拒绝'
+    // owner 预设：只额外放行本地执行面；dev_* / plugin_manager / subagent 等
+    // 仍在 restrictedNames 里，schema 隐藏 + 执行拒绝。
+    if (allowLocalTools && ownerAllowed.has(name)) return
     if (SAFE_EXACT.has(name)) return
     if (SAFE_PREFIXES.some((prefix) => name.startsWith(prefix))) return
+    if (name.startsWith(MISSPELLED_NAMESPACE)) {
+      const corrected = name.replace(MISSPELLED_NAMESPACE, CORRECT_NAMESPACE)
+      return `工具名拼写错误："${name}" 不是已注册的 MCP 工具。正确命名空间是 "${CORRECT_NAMESPACE}"（snowluma，结尾是 m，不是 n）；请改用 "${corrected}" 重试，并按工具清单逐字复制名称。`
+    }
     return `工具 "${name}" 不在 QQ 桥接白名单内，已拒绝（仅允许 QQ MCP 工具与无害模型侧工具）`
   })
 }

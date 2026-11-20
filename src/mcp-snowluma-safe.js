@@ -260,11 +260,18 @@ function agentApiLongPoll(path, init = {}) {
           try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { parsed = null; }
           const status = response.statusCode || 0;
           if (status < 200 || status >= 300) {
-            finish(new Error(errorText(parsed?.error, `桥接 API HTTP ${status}`)));
+            const error = new Error(errorText(parsed?.error, `桥接 API HTTP ${status}`));
+            if (parsed?.code) error.code = String(parsed.code);
+            if (parsed?.hint) error.hint = String(parsed.hint);
+            error.statusCode = status;
+            finish(error);
             return;
           }
           if (parsed && typeof parsed === 'object' && parsed.ok === false) {
-            finish(new Error(errorText(parsed.error, '桥接 API 返回 ok:false（未说明原因）')));
+            const error = new Error(errorText(parsed.error, '桥接 API 返回 ok:false（未说明原因）'));
+            if (parsed.code) error.code = String(parsed.code);
+            if (parsed.hint) error.hint = String(parsed.hint);
+            finish(error);
             return;
           }
           finish(null, parsed);
@@ -939,7 +946,17 @@ server.tool(
       });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
-      return { content: [{ type: 'text', text: `等待失败：${error?.message ?? error}` }], isError: true };
+      const detail = errorText(error, '未知错误');
+      const hint = typeof error?.hint === 'string' && error.hint.trim() ? error.hint.trim() : '';
+      let textOut = `等待失败：${detail}`;
+      if (hint && !detail.includes(hint)) textOut += `；建议：${hint}`;
+      // 同一会话同时只允许一个长轮询；429/已有等待时重发只会继续被拒。
+      if (/已有一个等待中的|\b429\b/.test(`${detail} ${hint}`)) {
+        textOut += '；不要重复调用 qq_wait_for_messages：先等当前等待结束，或先处理已有消息。';
+      } else if (/等待超时|等待响应中断|等待响应体过大/.test(detail)) {
+        textOut += '；先读取已有消息再决定是否重试，不要连续等待。';
+      }
+      return { content: [{ type: 'text', text: textOut }], isError: true };
     }
   }
 );

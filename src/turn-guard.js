@@ -11,6 +11,10 @@
 export const DEFAULT_TURN_GUARD = Object.freeze({
   maxSteps: 40,
   maxRepeatedErrors: 3,
+  // 单轮墙钟上限：防止一个回合被长阻塞工具（尤其 see_now watch）拖到几十分钟。
+  maxTurnMs: 10 * 60 * 1000,
+  // see_now 单次阻塞上限：比整轮墙钟更短，保证 QQ 消息不会等太久。
+  maxSeeNowMs: 45 * 1000,
 })
 
 // 预期内的业务拒绝（不是"环境坏了"）：模型重试是浪费，但**不该把整轮停掉**——
@@ -36,6 +40,8 @@ export function createTurnGuard(options = {}) {
   const cfg = { ...DEFAULT_TURN_GUARD, ...(options && typeof options === 'object' ? options : {}) };
   const maxSteps = Math.max(1, Math.round(Number(cfg.maxSteps) || DEFAULT_TURN_GUARD.maxSteps));
   const maxRepeatedErrors = Math.max(1, Math.round(Number(cfg.maxRepeatedErrors) || DEFAULT_TURN_GUARD.maxRepeatedErrors));
+  const maxTurnMs = Math.max(60_000, Number(cfg.maxTurnMs) || DEFAULT_TURN_GUARD.maxTurnMs);
+  const maxSeeNowMs = Math.max(10_000, Number(cfg.maxSeeNowMs) || DEFAULT_TURN_GUARD.maxSeeNowMs);
   const turns = new Map();
 
   function begin(sessionId, key = '', now = Date.now()) {
@@ -45,6 +51,7 @@ export function createTurnGuard(options = {}) {
       startedAt: now,
       steps: 0,
       errors: new Map(),
+      activeTool: null,
       stopped: false,
       stopReason: null,
     };
@@ -75,6 +82,59 @@ export function createTurnGuard(options = {}) {
       });
     }
     return null;
+  }
+
+  /** 工具开始：记下当前阻塞工具，用于 see_now 超时判断。 */
+  function noteToolStart(sessionId, tool, now = Date.now()) {
+    const state = turns.get(sessionId);
+    if (!state || state.stopped) return;
+    state.activeTool = {
+      name: String(tool ?? ''),
+      startedAt: now,
+    };
+  }
+
+  /** 工具结束：清掉当前阻塞工具，避免下一轮误判。 */
+  function noteToolEnd(sessionId) {
+    const state = turns.get(sessionId);
+    if (!state || state.stopped) return;
+    state.activeTool = null;
+  }
+
+  /**
+   * 看门狗：检查「单次阻塞工具」和「整轮墙钟」。
+   *
+   * 只做纯判断，不碰定时器；bridge 每 15 秒遍历一遍即可。
+   * see_now 的 watch 会阻塞几百秒，期间没有任何事件能触发 noteStep；
+   * 必须有这条按时间走的线，否则步数上限对「一次 7 分钟」完全无效。
+   */
+  function noteElapsed(sessionId, now = Date.now()) {
+    const state = turns.get(sessionId);
+    if (!state || state.stopped) return null;
+
+    const tool = state.activeTool;
+    if (tool && /see_now/i.test(tool.name) && now - tool.startedAt > maxSeeNowMs) {
+      const seconds = Math.round((now - tool.startedAt) / 1000);
+      return stop(state, 'TURN_SEE_NOW_STALLED', `see_now 单次阻塞超过 ${Math.round(maxSeeNowMs / 1000)} 秒（已 ${seconds} 秒）`, {
+        tool: tool.name,
+        elapsedMs: now - tool.startedAt,
+        maxSeeNowMs,
+      });
+    }
+
+    if (now - state.startedAt > maxTurnMs) {
+      const minutes = Math.round((now - state.startedAt) / 60_000);
+      return stop(state, 'TURN_WALL_CLOCK_EXCEEDED', `单轮已运行 ${minutes} 分钟，超过 ${Math.round(maxTurnMs / 60_000)} 分钟上限`, {
+        elapsedMs: now - state.startedAt,
+        maxTurnMs,
+      });
+    }
+    return null;
+  }
+
+  /** 供 bridge 看门狗遍历当前仍在跑的回合。 */
+  function active() {
+    return [...turns.values()];
   }
 
   /** 工具错误：同一个 tool + 归一化错误重复到阈值就停。 */
@@ -113,11 +173,26 @@ export function createTurnGuard(options = {}) {
     const state = turns.get(sessionId);
     if (!state || state.stopped) return;
     state.steps = 0;
+    // 连续聊天不该被整轮墙钟掐断：真人每说一句，就把墙钟重新起算。
+    state.startedAt = Date.now();
   }
 
   function end(sessionId) {
     turns.delete(sessionId);
   }
 
-  return { begin, get, noteStep, noteInbound, noteToolError, noteBudgetExhausted, end, config: { maxSteps, maxRepeatedErrors } };
+  return {
+    begin,
+    get,
+    noteStep,
+    noteInbound,
+    noteToolStart,
+    noteToolEnd,
+    noteElapsed,
+    active,
+    noteToolError,
+    noteBudgetExhausted,
+    end,
+    config: { maxSteps, maxRepeatedErrors, maxTurnMs, maxSeeNowMs },
+  };
 }

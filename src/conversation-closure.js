@@ -123,11 +123,18 @@ function labelOf(kind) {
   return KIND_LABEL[kind] ?? '普通消息';
 }
 
+/** 消息时间：入站消息用 time，语音/表情等历史记录只有 at；两者都认。 */
+function messageTime(m) {
+  const t = Number(m?.time ?? m?.at ?? 0);
+  return Number.isFinite(t) ? t : 0;
+}
+
 /** 只保留最近窗口内的消息，按时间升序；去掉拍一拍等非聊天事件。 */
 function chatMessages(list, now, windowMs) {
   const cutoff = now - windowMs;
   return (Array.isArray(list) ? list : [])
-    .filter((m) => m && m.kind !== 'poke' && Number(m.time || 0) >= cutoff)
+    .filter((m) => m && m.kind !== 'poke' && messageTime(m) >= cutoff)
+    .map((m) => ({ ...m, time: messageTime(m) }))
     .slice(-80);
 }
 

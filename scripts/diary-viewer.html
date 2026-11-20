@@ -183,7 +183,7 @@ function counts() {
     public: data?.public?.length ?? 0,
     private: data?.private?.length ?? 0,
     digest: data?.digest?.length ?? 0,
-    memory: (data?.memory?.qq ? 1 : 0) + (data?.memory?.bili ? 1 : 0),
+    memory: (data?.memory?.qq ? 1 : 0) + (data?.memory?.bili ? 1 : 0) + (data?.memory?.owner ? 1 : 0),
   };
 }
 
@@ -221,12 +221,15 @@ function renderContent() {
   if (tab === 'memory') {
     const qq = data.memory?.qq || '（没有 QQ 记忆卡）';
     const bili = data.memory?.bili || '（没有 B站 记忆卡）';
+    const owner = data.memory?.owner || '（还没有写对他的认识）';
     content.innerHTML = `
-      <div class="day-head"><span>她的记忆卡</span><span>就是每轮真正塞进她提示词里的那两段</span></div>
+      <div class="day-head"><span>她的记忆卡</span><span>就是每轮真正塞进她提示词里的那几段</span></div>
       <div class="card"><div class="meta"><span class="chip">QQ · ${fmtBytes(data.sources?.memoryQq?.bytes ?? 0)}</span></div>
         <div class="memory-block">${highlight(renderMd(qq), query)}</div></div>
       <div class="card"><div class="meta"><span class="chip private">B站 · ${fmtBytes(data.sources?.memoryBili?.bytes ?? 0)}</span></div>
-        <div class="memory-block">${highlight(renderMd(bili), query)}</div></div>`;
+        <div class="memory-block">${highlight(renderMd(bili), query)}</div></div>
+      <div class="card"><div class="meta"><span class="chip private">她写的 · 对他的认识 · ${fmtBytes(data.sources?.memoryOwner?.bytes ?? 0)}</span></div>
+        <div class="memory-block">${highlight(renderMd(owner), query)}</div></div>`;
     return;
   }
   const items = visibleEntries();
@@ -254,7 +257,7 @@ function renderContent() {
 function renderStats() {
   if (!data) return;
   const t = data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '';
-  $('stats').textContent = `角色 ${data.character || ''} · 公开 ${data.public?.length ?? 0} · 私密 ${data.private?.length ?? 0} · 摘要 ${data.digest?.length ?? 0} 条 · 读取于 ${t}`;
+  $('stats').textContent = `角色 ${data.character || ''} · 公开 ${data.public?.length ?? 0} · 私密 ${data.private?.length ?? 0} · 摘要 ${data.digest?.length ?? 0} 条 · 对他的认识 ${data.memory?.owner ? '1 篇' : '0 篇'} · 读取于 ${t}`;
 }
 
 function renderAll() { renderTabs(); renderDays(); renderContent(); renderStats(); }

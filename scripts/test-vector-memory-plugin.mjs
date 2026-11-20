@@ -46,8 +46,8 @@ fs.writeFileSync(path.join(surfcore, 'config.json'), JSON.stringify({ memory: { 
 
 const inbox = path.join(memoryDir, 'memory-inbox.jsonl');
 fs.writeFileSync(inbox, [
-  JSON.stringify({ at: '2026-11-01T10:00:00+08:00', kind: 'private', senderId: '1', isOwner: true, text: '主人今天有点累，想抱抱' }),
-  JSON.stringify({ at: '2026-11-01T10:05:00+08:00', kind: 'group', senderId: '2', groupId: '9', sender: '群友', text: '今天聊了很多游戏的事' }),
+  JSON.stringify({ at: '2026-11-01T10:00:00+08:00', kind: 'private', senderId: '1', conversationKey: 'private:1', isOwner: true, text: '主人今天有点累，想抱抱' }),
+  JSON.stringify({ at: '2026-11-01T10:05:00+08:00', kind: 'group', senderId: '2', groupId: '9', conversationKey: 'group:9', sender: '群友', text: '今天聊了很多游戏的事' }),
 ].join('\n') + '\n');
 
 const mod = await import('../plugins/surfcore/lib/vector-memory.js?test=plugin');
@@ -64,6 +64,15 @@ try {
   const indexPaths = vectorIndexPaths(resolveVectorMemoryPaths(memoryDir), config.modelSpace);
   assert.ok(fs.existsSync(indexPaths.json));
   assert.ok(fs.existsSync(indexPaths.bin));
+  // 会话隔离字段必须进索引投影：缺了 senderId/conversationKey/private/isOwner，
+  // bridge 的 vectorEntryVisibleForKey 会把主人私聊误判成“非本人私聊”而过滤掉。
+  const index = JSON.parse(fs.readFileSync(indexPaths.json, 'utf8'));
+  const ownerEntry = index.entries.find((entry) => entry.text.includes('主人今天有点累'));
+  assert.ok(ownerEntry, '私聊条目应已进索引');
+  assert.equal(ownerEntry.conversationKey, 'private:1');
+  assert.equal(ownerEntry.private, true);
+  assert.equal(ownerEntry.isOwner, true);
+  assert.equal(ownerEntry.senderId, '1');
   const second = await mod.runVectorMemoryMaintenance({ config: mod.vectorMemoryConfig() });
   assert.equal(second.ok, true);
   assert.equal(second.embedded, 0);

@@ -8,7 +8,7 @@ import {
   formatMaterialLine, inQuietHours, isDuplicateText, markPurposeDelivered, markPurposeSkip,
   minePurposeSeeds, needAffinity, normalizePurposeConfig, normalizePurposeState, parseClock,
   parsePurposeMemo, planNextFire, quietEndAfter, resolvePendingPurpose, selectPurpose,
-  summarizePurposeState, textSimilarity,
+  summarizePurposeState, textSimilarity, pruneGoals,
 } from '../src/purpose-engine.js';
 
 let pass = 0;
@@ -182,20 +182,20 @@ test('选目的：权重/去重（planned / sourceId）/ 优先惦记的事', ()
     { id: 'a', kind: 'share', text: '想跟主人说说养鱼游戏', sourceId: 'bili:1', weight: 1.2 },
     { id: 'b', kind: 'care', text: '想知道主人面试后来怎么样', sourceId: 'qq:1', weight: 1.1 },
   ];
-  const picked = selectPurpose({ seeds, pending: [], history: [], config: c, random: () => 0.1 });
+  const picked = selectPurpose({ seeds, pending: [], history: [], config: c, now, random: () => 0.1 });
   assert.ok(picked.purpose);
-  assert.equal(selectPurpose({ seeds, pending: [], history: [], config: c, random: () => 0.99 }).candidates.length, 2);
+  assert.equal(selectPurpose({ seeds, pending: [], history: [], config: c, now, random: () => 0.99 }).candidates.length, 2);
 
   const history = [{ at: now, outcome: 'sent', planned: '想跟主人说说养鱼游戏', sourceId: 'bili:1', purpose: '聊聊养鱼', text: '主人，那个养鱼游戏…' }];
-  const after = selectPurpose({ seeds, pending: [], history, config: c, random: () => 0.1 });
+  const after = selectPurpose({ seeds, pending: [], history, config: c, now, random: () => 0.1 });
   assert.equal(after.purpose.sourceId, 'qq:1');
 
   const pending = [{ text: '想问主人周末有没有空', kind: 'curiosity', id: 'p1' }];
-  const fromPending = selectPurpose({ seeds, pending, history: [], config: c, random: () => 0.1 });
+  const fromPending = selectPurpose({ seeds, pending, history: [], config: c, now, random: () => 0.1 });
   assert.equal(fromPending.fromPending, true);
   assert.equal(fromPending.purpose.text, '想问主人周末有没有空');
 
-  const allDup = selectPurpose({ seeds: [seeds[0]], pending: [], history, config: c, random: () => 0.1 });
+  const allDup = selectPurpose({ seeds: [seeds[0]], pending: [], history, config: c, now, random: () => 0.1 });
   assert.equal(allDup.purpose, null);
 });
 
@@ -335,6 +335,21 @@ test('初始排程：没有 nextFireAt 时排到 initialDelay；安静时段自�
   day.countToday = 4;
   ensurePurposeDay(day, local(10, 0));
   assert.ok(markPurposeSkip(day, { now: local(10, 0), reason: 'x', nextFireAt: 123 }).nextFireAt === 123);
+
+  // 旧状态：刚发完 20 分钟，nextFireAt 只排到 23 分钟后；升级后要按新的 gapMin 推开。
+  const legacy = createPurposeState(local(10, 0));
+  legacy.lastOutcome = 'sent';
+  legacy.lastSentAt = local(10, 0) - 20 * 60000;
+  legacy.nextFireAt = local(10, 0) + 23 * 60000;
+  ensurePurposeSchedule(legacy, { now: local(10, 0), config: c });
+  assert.ok(legacy.nextFireAt >= legacy.lastSentAt + c.gapMinMs);
+
+  // 很久以前发过、状态里又没有 nextFireAt：不能把 floor 当成立即开火，仍走初始延迟。
+  const stale = createPurposeState(local(10, 0));
+  stale.lastOutcome = 'sent';
+  stale.lastSentAt = local(10, 0) - 7 * 24 * 3600000;
+  ensurePurposeSchedule(stale, { now: local(10, 0), config: c, random: () => 0 });
+  assert.ok(stale.nextFireAt >= local(10, 0) + c.initialDelayMinMs);
 });
 
 test('目标假设：群友的目标不冒充我的 / 单次视频低置信 / 重复才升级 / 人机关系', () => {
@@ -530,6 +545,111 @@ test('人格卡 → 动机先验：载入人格+记忆卡就能形成起始目�
   };
   const packet = collectMaterials({ now, config: c, ownerUin: '123', roleName: '小咪', conversations: [], biliEntries: [], memoryRecords: [oldPinned] });
   assert.ok(packet.items.some((m) => m.kind === 'memory' && m.text.includes('一起看')));
+});
+
+test('目标冷却：问过 1 次 48h 内不再候选，第 2 次后冷却 7 天', () => {
+  const now = local(14, 0);
+  const c = normalizePurposeConfig({});
+  const goal = {
+    id: 'g-cooldown', owner: 'self', domain: 'connect', object: { type: 'topic', name: 'mer' },
+    intent: '想问问主人现在在做什么，能不能陪一会儿', confidence: 0.9, value: 0.6, urgency: 0.2, risk: 0.05,
+    action: 'ask', nextStep: '问问主人', status: 'active', emotion: 'lonely', createdAt: now - 7200000,
+    lastSeenAt: now - 7200000, expiresAt: now + 7 * 86400000, attempts: 1, lastActionAt: now - 3600000,
+    lastFeedbackAt: 0, sightings: 1, source: 'media', lastAskedAt: 0, cooldownUntil: 0,
+  };
+  const planned = { goalId: goal.id, action: 'ask', need: 'connect', topic: 'mer', text: goal.intent };
+  const s = createPurposeState(now);
+  s.goals = [goal];
+  applyPurposeOutcome(s, { now, config: c, outcome: 'sent', text: '主人，在忙吗', planned });
+  const g = s.goals[0];
+  assert.equal(g.lastAskedAt, now);
+  assert.ok(g.cooldownUntil >= now + 47 * 3600000, '第一次询问至少冷却 48 小时');
+  const blocked = selectPurpose({ goals: s.goals, seeds: [], pending: [], history: [], config: c, now, random: () => 0.5 });
+  assert.equal(blocked.purpose, null, '冷却中的目标不能再次进候选');
+
+  // 模拟冷却到期后她又问了一次：第二次发出后应升级到 7 天冷却。
+  g.cooldownUntil = 0;
+  g.attempts = 1;
+  applyPurposeOutcome(s, { now, config: c, outcome: 'sent', text: '主人，在忙吗', planned });
+  assert.ok(g.cooldownUntil >= now + 6.9 * 24 * 3600000, '第二次询问后冷却 7 天');
+});
+
+test('同义目标：同一 intent 只留置信度最高的一个', () => {
+  const now = local(14, 0);
+  const goals = [0.9, 0.8, 0.7].map((confidence, i) => ({
+    id: `g-same-${i}`, owner: 'self', domain: 'connect', object: { type: 'topic', name: `素材${i}` },
+    intent: '想问问主人现在在做什么，能不能陪一会儿', confidence, value: 0.6, urgency: 0.2, risk: 0.05,
+    action: 'ask', nextStep: '问问主人', status: 'active', emotion: 'lonely', createdAt: now - 7200000,
+    lastSeenAt: now - 7200000, expiresAt: now + 7 * 86400000, attempts: 0, lastActionAt: 0,
+    lastFeedbackAt: 0, lastAskedAt: 0, cooldownUntil: 0, sightings: 1, source: 'media',
+  }));
+  const kept = pruneGoals(goals, now);
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].id, 'g-same-0');
+});
+
+test('话题去重：换个说法但 topic 相同也算重复', () => {
+  const now = local(14, 0);
+  const history = [{ at: now, topic: 'mer', planned: '我在B站评论末尾老挂个mer', text: '主人，我最近评论老带个尾巴' }];
+  assert.equal(isDuplicateText('评论尾巴那个习惯', history, 0.45, 'mer'), true);
+});
+
+test('旧 pending：超过 72 小时不再进提示词，也不再进候选', () => {
+  const now = local(14, 0);
+  const c = normalizePurposeConfig({});
+  const old = { text: '73 小时前的旧账', kind: 'curiosity', createdAt: now - 80 * 3600000, expiresAt: now + 10 * 86400000 };
+  const prompt = buildPurposePrompt({
+    now, config: c, mode: 'chat', ownerUin: owner, materials: [], candidates: [], selected: null,
+    pending: [old], history: [],
+  });
+  assert.equal(prompt.includes(old.text), false);
+  const picked = selectPurpose({ goals: [], seeds: [], pending: [old], history: [], config: c, now, random: () => 0.5 });
+  assert.equal(picked.purpose, null);
+
+  const s = createPurposeState(now);
+  s.pending = [old];
+  applyPurposeOutcome(s, { now, config: c, outcome: 'sent', text: 'x' });
+  assert.equal(s.pending.length, 0, '旧 pending 应被清理');
+
+  // 「等他回…」这种 ask 型 pending：主人之后已经说过话，就不该再注入。
+  const askOld = { text: '等他回那句「哪句像人机」，别急着辩', kind: 'ask', createdAt: now - 22 * 3600000, expiresAt: now + 10 * 86400000 };
+  const ownerAfter = { kind: 'owner', text: '在另一个窗口', at: now - 3600000 };
+  const prompt2 = buildPurposePrompt({
+    now, config: c, mode: 'chat', ownerUin: owner, materials: [ownerAfter], candidates: [], selected: null,
+    pending: [askOld], history: [],
+  });
+  assert.equal(prompt2.includes(askOld.text), false);
+  const picked2 = selectPurpose({ goals: [], seeds: [], pending: [askOld], history: [], config: c, now, lastMasterAt: ownerAfter.at, random: () => 0.5 });
+  assert.equal(picked2.purpose, null);
+});
+
+test('主人说“这说过了”按否定结算，并给目标长冷却', () => {
+  const now = local(14, 0);
+  const c = normalizePurposeConfig({});
+  const goal = {
+    id: 'g-answered', owner: 'self', domain: 'connect', object: { type: 'topic', name: 'mer' },
+    intent: '想问问主人现在在做什么，能不能陪一会儿', confidence: 0.9, value: 0.6, urgency: 0.2, risk: 0.05,
+    action: 'ask', nextStep: '问问主人', status: 'active', emotion: 'lonely', createdAt: now - 7200000,
+    lastSeenAt: now - 7200000, expiresAt: now + 7 * 86400000, attempts: 1, lastActionAt: now - 3600000,
+    lastFeedbackAt: 0, lastAskedAt: now - 3600000, cooldownUntil: 0, sightings: 1, source: 'media',
+  };
+  const result = formGoalHypotheses({
+    materials: [{ kind: 'owner', text: '这说过了，你忘了？', at: now - 1800000 }],
+    goals: [goal], observations: [], drives: {}, now, lastMasterAt: now - 1800000, config: c,
+  });
+  const g = result.goals.find((item) => item.id === 'g-answered');
+  assert.equal(g.status, 'rejected');
+  assert.ok(g.cooldownUntil >= now + 6.9 * 24 * 3600000);
+
+  // “在另一个窗口”不是否定词，但主人确实回了；中性答复也要让目标冷却，别马上再问。
+  const classGoal = { ...goal, id: 'g-class', object: { type: 'topic', name: '那个班' }, intent: '想接上主人说的那个班' };
+  const neutral = formGoalHypotheses({
+    materials: [{ kind: 'owner', text: '在另一个窗口', at: now - 1800000 }],
+    goals: [classGoal], observations: [], drives: {}, now, lastMasterAt: now - 1800000, config: c,
+  });
+  const cg = neutral.goals.find((item) => item.id === 'g-class');
+  assert.ok(cg.cooldownUntil >= now + 47 * 3600000);
+  assert.ok(cg.confidence <= classGoal.confidence, '中性回复不应抬高置信度');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

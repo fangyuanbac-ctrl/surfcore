@@ -36,3 +36,20 @@ test('memory.mode=narrative：注入记忆卡，忽略检索块', async () => {
     await harness.close();
   }
 });
+
+test('memory.mode=vector 但检索为空：回落到记忆卡，不清空记忆', async () => {
+  const harness = await bridgeHarness({
+    config: { memory: { mode: 'vector' } },
+    files: {
+      'dsh/surfcore/config.json': { memory: { mode: 'vector' } },
+      'dsh/surfcore/memory/memory-card-prompt-qq.md': '【记忆卡】\n叙事旧事',
+    },
+  });
+  try {
+    const prompt = harness.buildWakePromptV2('private:123', 'timeout', '');
+    assert.match(prompt, /【记忆卡】/);
+    assert.match(prompt, /叙事旧事/);
+  } finally {
+    await harness.close();
+  }
+});

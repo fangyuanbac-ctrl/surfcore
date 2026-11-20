@@ -1324,9 +1324,9 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
         F("socialV2.context.rolloverEnabled", "会话太长自动换新会话", "默认关。开启后当前上下文超过阈值会在下一轮换新会话；旧上下文不再续接，只靠交接摘要和记忆卡接上，可能出现遗忘或回答不连贯。确认理解后再开。", "switch"),
         F("socialV2.context.rolloverContextTokens", "换会话阈值（当前上下文 token）", "默认 500000；这一轮实际带进模型的上下文超过才换。0 = 不按 token 判断", "number", { min: 0 }),
         F("socialV2.context.rolloverTurns", "换会话阈值（唤醒次数）", "默认 0 = 不按次数；两个阈值谁先到都算", "number", { min: 0 }),
-        F("socialV2.context.rolloverSummary", "换会话时留交接", "默认开。记忆卡每轮都注入，所以只补一句「刚才聊到哪」，不额外花模型调用", "switch"),
-        F("socialV2.context.rolloverKeepRecent", "交接里带最近几句", "默认 24", "number", { min: 4, max: 200 }),
-        F("socialV2.context.rolloverSummaryMaxChars", "交接块字数上限", "默认 700", "number", { min: 120, max: 4000 }),
+        F("socialV2.context.rolloverSummary", "换会话时留交接", "默认开。交接块会带：刚才在聊、还挂着的话题、我说过的带情绪原话、答应过/没做完、下次接法、最近原话；不额外花模型调用", "switch"),
+        F("socialV2.context.rolloverKeepRecent", "交接里带最近几句", "默认 24；从最近消息里挑原话、承诺、带情绪的话和最近几句，不是整段搬过去", "number", { min: 4, max: 200 }),
+        F("socialV2.context.rolloverSummaryMaxChars", "交接块字数上限", "默认 700；调大可带更多话题与最近原话", "number", { min: 120, max: 4000 }),
       ]},
       { group: "二代 · 主动与反馈", fields: [
         F("socialV2.proactive.enabled", "主动搭话", "", "switch"),

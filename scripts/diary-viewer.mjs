@@ -170,6 +170,7 @@ function buildPayload() {
   const memory = {
     qq: readText(path.join(MEM_DIR, 'memory-card-prompt-qq.md')),
     bili: readText(path.join(MEM_DIR, 'memory-card-prompt-bili.md')),
+    owner: readText(path.join(MEM_DIR, 'owner-understanding.md')),
   };
   const files = {
     public: statInfo(path.join(BILI_DIR, 'whale-diary.md')),
@@ -177,6 +178,7 @@ function buildPayload() {
     digest: statInfo(DIGEST_FILE),
     memoryQq: statInfo(path.join(MEM_DIR, 'memory-card-prompt-qq.md')),
     memoryBili: statInfo(path.join(MEM_DIR, 'memory-card-prompt-bili.md')),
+    memoryOwner: statInfo(path.join(MEM_DIR, 'owner-understanding.md')),
   };
   return {
     ok: true,

@@ -6,7 +6,7 @@ import path from 'node:path'
 import assert from 'node:assert/strict'
 
 import {
-  DEFAULT_ROLLOVER, buildHandoffBlock, handoffIsUseful, normalizeRolloverConfig, shouldRollSession,
+  DEFAULT_ROLLOVER, buildHandoffBlock, handoffIsUseful, isRolloverWindow, normalizeRolloverConfig, shouldRollSession,
 } from '../src/session-rollover.js'
 import { DEFAULT_BATCH_WINDOWS, batchWindowFor, normalizeBatchWindows } from '../src/wake-batch.js'
 import { evaluateLocalFilter, normalizeLocalFilter } from '../src/wake-filter.js'
@@ -52,6 +52,30 @@ console.log('## 2. 该不该换会话')
   ok(shouldRollSession({ contextTokens: 0, turns: 500, config: { ...cfg, tokens: 0, turns: 0 } }) === false, '两个维度都关 = 不滚')
 }
 
+console.log('## 2.1 凌晨窗口与 300000')
+{
+  const cfg = normalizeRolloverConfig({
+    rolloverEnabled: true,
+    rolloverContextTokens: 300000,
+    rolloverTurns: 0,
+    rolloverNightOnly: true,
+    rolloverNightStartHour: 4,
+    rolloverNightStartMinute: 0,
+    rolloverNightWindowMinutes: 60,
+  })
+  const at415 = new Date(2026, 10, 16, 4, 15)
+  const at1500 = new Date(2026, 10, 16, 15, 0)
+  const at459 = new Date(2026, 10, 16, 4, 59)
+  const at500 = new Date(2026, 10, 16, 5, 0)
+  ok(isRolloverWindow(at415, cfg) === true, '4:15 在窗口内')
+  ok(isRolloverWindow(at459, cfg) === true, '4:59 仍在窗口内')
+  ok(isRolloverWindow(at500, cfg) === false, '5:00 出窗口')
+  ok(shouldRollSession({ contextTokens: 300000, turns: 3, config: cfg, now: at415, enforceNightWindow: true }) === true, '刚好 300000 且在 4 点窗口 → 滚')
+  ok(shouldRollSession({ contextTokens: 299999, turns: 3, config: cfg, now: at415, enforceNightWindow: true }) === false, '差 1 token 不滚')
+  ok(shouldRollSession({ contextTokens: 350000, turns: 3, config: cfg, now: at1500, enforceNightWindow: true }) === false, '白天到 350000 也不滚')
+  ok(shouldRollSession({ contextTokens: 350000, turns: 3, config: cfg, now: at1500, enforceNightWindow: false }) === true, '机器模式可绕过窗口')
+}
+
 console.log('## 3. 交接块')
 {
   const recent = [
@@ -60,12 +84,48 @@ console.log('## 3. 交接块')
     { sender: '小明', plain: '嗯，明天再聊', isSelf: false },
   ]
   const block = buildHandoffBlock({ key: 'group:1', recent, closure: '聊到他加班', config: DEFAULT_ROLLOVER })
-  ok(block.includes('【会话交接】'), '带标题，下一段会话知道这是交接')
+  ok(block.includes('【睡前记忆') && block.includes('会话交接'), '带睡前记忆标题，下一段会话知道这是交接')
   ok(block.includes('小明：今天加班到十点'), '带最近对话')
   ok(block.includes('聊到他加班'), '带上次收尾摘要')
-  ok(!block.includes('我：那你早点睡'), '她自己的话不进交接（isSelf 跳过）')
+  // 2026-11-16（主人定）：睡前记忆要留下「她答应过什么」，所以她自己的话必须进交接；
+  // 旧版本为了省字数跳过 isSelf，结果她答应的事只在对方话里才抓得住。
+  ok(block.includes('我：那你早点睡'), '她自己的话也进交接（承诺不能只靠对方复述）')
+  ok(block.includes('我答应过 / 还没做完的事'), '单列答应过 / 还没做完的事')
   ok(block.includes('不要提') && block.includes('换过会话'), '明确要求别提前进换过会话')
   ok(handoffIsUseful(block) === true, '有内容的交接判定为有用')
+
+  const rich = buildHandoffBlock({
+    recent,
+    closure: '聊到他加班',
+    nextOpening: '明天问他几点下班',
+    topics: [{ text: '他加班到很晚', pendingQuestion: '几点下班' }],
+    pendingThoughts: [{ text: '想问他累不累', motivation: '怕他硬撑' }],
+    config: DEFAULT_ROLLOVER,
+  })
+  ok(rich.includes('【还挂着的话题】') && rich.includes('还欠：几点下班'), '带还挂着的话题与未回答的问题')
+  ok(rich.includes('【下次接】') && rich.includes('明天问他几点下班'), '带下次接法')
+  ok(rich.includes('【还没说出口的】') && rich.includes('想问他累不累'), '带还没说出口的话')
+
+  const ownerBlock = buildHandoffBlock({
+    recent: [{ sender: '私聊', isOwner: true, plain: '明天见' }],
+    closure: '',
+    config: DEFAULT_ROLLOVER,
+  })
+  ok(ownerBlock.includes('主人：明天见'), '私聊里的主人显示成「主人」，不显示成「私聊」')
+
+  // 她自己的情绪原话不能被「最近 20 句」挤掉：25 句之后，早先那句也要单独捞出来。
+  const emotional = buildHandoffBlock({
+    recent: [
+      { sender: '我', isSelf: true, plain: '我其实有点舍不得你走' },
+      ...Array.from({ length: 23 }, (_, i) => ({ sender: '小明', plain: `第 ${i} 句普通闲聊` })),
+    ],
+    closure: '聊到离别',
+    config: { ...DEFAULT_ROLLOVER, summaryMaxChars: 1500 },
+  })
+  ok(
+    emotional.includes('【我说过的、带情绪的话】') && emotional.includes('我其实有点舍不得你走'),
+    '她早先的带情绪原话会单独保留，不靠最近 20 句碰运气',
+  )
 
   const empty = buildHandoffBlock({ recent: [], closure: '', config: DEFAULT_ROLLOVER })
   ok(handoffIsUseful(empty) === false, '空交接判定为无用（不注入）')
@@ -74,6 +134,7 @@ console.log('## 3. 交接块')
   const capped = buildHandoffBlock({ recent: long, closure: '收尾', config: { ...DEFAULT_ROLLOVER, summaryMaxChars: 400 } })
   ok(capped.length <= 400, `超字数会截断（实得 ${capped.length}）`)
   ok(capped.includes('刚才收在：收尾'), '截断时保留「刚才收在」')
+  ok(capped.includes('不要提') && capped.includes('换过会话'), '截断时仍保留结尾要求')
 }
 
 console.log('## 4. 合并窗口分场景')
@@ -129,7 +190,7 @@ console.log('## 6. 接线钉子（防"写了模块但没接上"）')
   const rollIdx = bridge.indexOf('maybeRollSessionV2(key);', deliverIdx)
   const ensureIdx = bridge.indexOf('sessionId = await ensureSession(key);', deliverIdx)
   ok(deliverIdx > 0 && rollIdx > deliverIdx && ensureIdx > rollIdx, '所有投递路径在建会话前判断换会话（唤醒/目的共用）')
-  const rebuildIdx = bridge.indexOf('promptText = buildWakePromptV2(key, opts.wakeReason, vectorBlock);', deliverIdx)
+  const rebuildIdx = bridge.indexOf('buildWakePromptV2(key, opts.wakeReason, vectorBlock)', deliverIdx)
   const handoffIdx = bridge.indexOf('const handoffBlock = consumeHandoffV2(key);', deliverIdx)
   ok(rebuildIdx > 0 && handoffIdx > rebuildIdx, '交接块在正文重建之后才贴（不会被覆盖）')
   ok(!bridge.includes('const handoff = consumeHandoffV2(key);'), '唤醒路径不再重复消费交接（否则会被覆盖/丢）')

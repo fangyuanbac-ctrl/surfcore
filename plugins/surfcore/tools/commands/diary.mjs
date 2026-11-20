@@ -4,6 +4,8 @@
 //   node diary.mjs show [--days 1]      人读摘要：今天看了什么 / 想了什么 / 发了什么 / 额度还剩多少
 //   node diary.mjs log <kind> [--target X] [--note "…"]   记一条结构化事件到 ~/.dsh/surfcore/bili/whale-log.jsonl
 //   node diary.mjs tail [--n 20]        最近的结构化事件
+//   node diary.mjs inbox-append --text "…" [--visibility public|private]   QQ 窗口只写收件箱
+//   node diary.mjs inbox-merge          B站窗口把收件箱并进两本日记并归档
 //
 // 三个数据源（各司其职）：
 //   ~/.dsh/surfcore/bili/whale-diary.md      叙事（她自己的话：看过的、想法池、谁回过她）—— 给人读
@@ -29,10 +31,134 @@ for (let i = 1; i < argv.length; i += 1) {
 }
 const HOME = (process.env.USERPROFILE || process.env.HOME || '/')
 const DIARY = biliState('whale-diary.md')
+const PRIVATE = biliState('whale-diary-private.md')
+// QQ 窗口只写这一个收件箱；两本正式日记只由 B站窗口合并/写入，避免两边同时改同一文件。
+const INBOX = biliState('qq-diary-inbox.md')
+const INBOX_ARCHIVE = biliState('qq-diary-inbox.merged.md')
+const INBOX_LOCK = biliState('.qq-diary-inbox.lock')
 const QUOTA = biliState('quota.json')
 const LOG = biliState('whale-log.jsonl')
 const today = () => new Date().toLocaleDateString('sv-SE')
 const hhmm = (iso) => String(iso).slice(11, 16)
+const stamp = (d = new Date()) => {
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+// 收件箱锁：QQ 追加和 B站 合并都走这里。`wx` 是原子创建；锁超过 60 秒视为上一个进程
+// 崩溃留下的孤儿锁。锁只覆盖 inbox，正式日记仍由 B站 单个窗口写。
+function withInboxLock(fn) {
+  fs.mkdirSync(path.dirname(INBOX), { recursive: true })
+  let fd = null
+  for (let i = 0; i < 40; i += 1) {
+    try {
+      fd = fs.openSync(INBOX_LOCK, 'wx')
+      break
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      try {
+        if (Date.now() - fs.statSync(INBOX_LOCK).mtimeMs > 60_000) {
+          fs.rmSync(INBOX_LOCK, { force: true })
+          continue
+        }
+      } catch {}
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, i < 10 ? 50 : 150)
+    }
+  }
+  if (fd === null) throw new Error('日记收件箱忙，锁等待超时')
+  try {
+    fs.writeSync(fd, String(process.pid))
+    return fn()
+  } finally {
+    try { fs.closeSync(fd) } catch {}
+    try { fs.rmSync(INBOX_LOCK, { force: true }) } catch {}
+  }
+}
+
+function parseInboxEntries(text) {
+  const entries = []
+  let cur = null
+  for (const line of String(text ?? '').replace(/\r\n/g, '\n').split('\n')) {
+    const h = line.match(/^##\s+(.+)$/)
+    if (h) {
+      if (cur) entries.push(cur)
+      cur = { heading: h[1].trim(), body: [] }
+      continue
+    }
+    if (cur) cur.body.push(line)
+    else if (line.trim()) {
+      if (!entries.length) entries.push({ heading: '', body: [] })
+      entries[0].body.push(line)
+    }
+  }
+  if (cur) entries.push(cur)
+  return entries.filter((entry) => entry.heading || entry.body.join('').trim())
+}
+
+function mergeInbox() {
+  return withInboxLock(() => {
+    let raw = ''
+    try { raw = fs.readFileSync(INBOX, 'utf8') } catch {}
+    if (!raw.trim()) return { count: 0, public: 0, private: 0 }
+    const entries = parseInboxEntries(raw)
+    let pub = 0
+    let priv = 0
+    for (const entry of entries) {
+      const heading = entry.heading || stamp()
+      const isPublic = /\[(公开|public)\]/i.test(heading)
+      const cleanHeading = heading
+        .replace(/\[(公开|私密|public|private)\]/ig, '')
+        .replace(/^QQ\s*[·:：-]\s*/i, '')
+        .trim() || stamp()
+      const body = entry.body.join('\n').trim()
+      if (!body) continue
+      const block = `\n\n## QQ · ${cleanHeading}\n${body}\n`
+      if (isPublic) {
+        fs.appendFileSync(DIARY, block, 'utf8')
+        pub += 1
+      } else {
+        fs.appendFileSync(PRIVATE, block, 'utf8')
+        priv += 1
+      }
+    }
+    // 先归档原文再清空：万一写日记中途失败，用户还能从归档/原 inbox 里找回。
+    fs.appendFileSync(INBOX_ARCHIVE, `\n\n<!-- merged ${new Date().toISOString()} -->\n${raw}`, 'utf8')
+    fs.writeFileSync(INBOX, '', 'utf8')
+    return { count: pub + priv, public: pub, private: priv }
+  })
+}
+
+if (cmd === 'inbox-append') {
+  const text = String(opt.text ?? opt.note ?? opt._a ?? '').trim()
+  if (!text) {
+    console.error('用法: diary.mjs inbox-append --text "内容" [--visibility public|private]')
+    process.exit(1)
+  }
+  const visibility = opt.visibility === 'public' ? '公开' : '私密'
+  try {
+    withInboxLock(() => {
+      fs.appendFileSync(INBOX, `\n## ${opt.at ? String(opt.at) : stamp()} [${visibility}]\n${text}\n`, 'utf8')
+    })
+    console.log(`已写入 QQ 日记收件箱（${visibility}）：${INBOX}`)
+    process.exit(0)
+  } catch (error) {
+    console.error(`写收件箱失败：${error?.message ?? error}`)
+    process.exit(1)
+  }
+}
+
+if (cmd === 'inbox-merge') {
+  try {
+    const result = mergeInbox()
+    console.log(result.count
+      ? `已合并 QQ 日记 ${result.count} 条（公开 ${result.public} · 私密 ${result.private}）：${INBOX}`
+      : `QQ 日记收件箱为空：${INBOX}`)
+    process.exit(0)
+  } catch (error) {
+    console.error(`合并 QQ 日记失败：${error?.message ?? error}`)
+    process.exit(1)
+  }
+}
 
 if (cmd === 'log') {
   const kind = opt._a ?? 'event'

@@ -29,7 +29,7 @@ import { checkFree, upOf } from '../lib/free-gate.mjs'
 import { freeLimits } from '../lib/limits.mjs'
 import {
   fishGuardStatusText, likeFishComments, loadFishGuardState, markGathered,
-  normalizeBiliFishGuard, planFishGuard, recordFishGuardCheck,
+  normalizeBiliFishGuard, planFishGuard, recordFishGuardCheck, saveFishGuardState,
 } from '../lib/fish-guard.mjs'
 import { myDynamicKinds } from "../lib/my-dynamics.mjs"
 import { assertOutboundIdentitySafe } from '../lib/outbound-guard.mjs'
@@ -43,6 +43,9 @@ import { findByParent as findAttack, setStatus as setAttackStatus } from '../lib
 //   但受**每日合计 ≤3**、**同一视频 7 天内一次**两条硬限制（由 quota.mjs 强制）。
 const AUTO = process.argv.includes('--auto')
 const SHARE = process.argv.includes('--share')
+// --top-floor（2026-11-15 主人定）：这趟允许她自己开 1 条顶层评论，不再被鱼群保护强制聚拢。
+//   只对 --auto 的顶层评论生效；每趟最多 1 条，由 fish-guard.json 的 topFloor 记账。
+const TOP_FLOOR = process.argv.includes('--top-floor')
 // --once-per-person（2026-10-17 加）：同一个人 30 天内最多只回一条（只对"回复某人"生效）。
 // 2026-10-18 接线：不传旗标时按配置决定（config.listen.oncePerPerson ✓ 设置页那个开关）
 //   —— 只在"回复某人"（带 --parent）时生效；分享/顶层评论不受影响 ✓
@@ -128,7 +131,7 @@ const dry = args.get('dry') === true || args.has('dry')
 const go = args.get('go') === true || args.has('go')
 
 if (!oid || (!bvid && !refererArg) || !message) {
-  console.error('usage: --oid <aid|comment_id_str> [--bvid <BV...> | --referer <url>] --message "<text>" [--type 1|11|17] [--root <rpid> --parent <rpid>] [--force-gather|--no-force-gather] [--no-fish-gather] [--dry | --go]')
+  console.error('usage: --oid <aid|comment_id_str> [--bvid <BV...> | --referer <url>] --message "<text>" [--type 1|11|17] [--root <rpid> --parent <rpid>] [--top-floor] [--force-gather|--no-force-gather] [--no-fish-gather] [--dry | --go]')
   process.exit(2)
 }
 if (dry && go) { console.error('pick either --dry or --go, not both'); process.exit(2) }
@@ -317,6 +320,28 @@ const forceGather = args.get('no-force-gather') === true
   ? false
   : (args.get('force-gather') === true || fishCfg.forceGather !== false)
 const hadThread = Boolean(root || parent)
+// ── 开楼额度（2026-11-15 主人定）：每趟最多 1 条顶层评论 ─────────────
+// 用 whale-night.json 的唤醒序号记账；没有排程时退回“本小时”，至少不会一小时刷多条。
+function currentWakeKey() {
+  try {
+    const st = JSON.parse(fs.readFileSync(biliState('whale-night.json'), 'utf8'))
+    const date = String(st?.date ?? '').trim() || new Date().toLocaleDateString('sv-SE')
+    return `whale:${date}:${String(st?.atText ?? '').trim()}:${Number(st?.wakes ?? 0) || 0}`
+  } catch {
+    return `manual:${new Date().toLocaleDateString('sv-SE')}:${new Date().getHours()}`
+  }
+}
+const topFloorKey = currentWakeKey()
+const topFloorAuto = AUTO && !SHARE && !hadThread
+const topFloorAlreadyUsed = Boolean(fishState.topFloor?.[topFloorKey])
+const topFloorIntent = topFloorAuto && !topFloorAlreadyUsed
+if (topFloorAuto && topFloorAlreadyUsed) {
+  if (go) {
+    console.error('✗ 这趟已经开过一楼了（每趟最多 1 条顶层评论）—— 这条要发就改成回复，或留到下一趟')
+    process.exit(3)
+  }
+  console.log('[开楼] 这趟已经开过一楼；dry 只预览，真发会被拒')
+}
 // 评论年龄闸：明确太旧的评论不回复，避免挖 2023 年坟、骚扰早已离开的人。
 if (hadThread) {
   try {
@@ -349,24 +374,28 @@ if (AUTO && !SHARE && fishCfg.enabled && !hadThread) {
   if (fishPlan.ok) {
     console.log(`\n[鱼群保护] ${fishGuardStatusText(fishPlan)}`)
     if (fishPlan.flooded) {
-      const noGather = args.get('no-fish-gather') === true
-      const target = fishCfg.gatherEnabled && !noGather ? fishPlan.gatherTarget : null
-      if (target) {
-        const age = checkCommentAge(target.ctime)
-        if (!age.ok) { printAgeBlock(age); process.exit(3) }
-        root = target.rpid
-        parent = target.rpid
-        const mention = `@${target.uname || target.mid || target.rpid}`
-        if (!String(message).startsWith(mention)) message = `${mention} ${message}`
-        if (fishPlan.gatherFallback) {
-          console.log('  → 没有满足条件的鱼楼；按「强制聚拢」选回复最少/最新的鱼楼，仍然回一条 ✓')
-        }
-        console.log(`  → 鱼太多，改成回 ${target.uname || target.rpid} 的楼层（rpid ${target.rpid}）`)
-      } else if (go) {
-        console.error('  → 鱼太多，且没有可聚拢的鱼楼：这次不发新楼层（留到下一趟）')
-        process.exit(3)
+      if (TOP_FLOOR && topFloorIntent) {
+        console.log('  → 这趟第一楼：按 --top-floor 放行，不聚拢 ✓')
       } else {
-        console.log('  [dry] 真发时会被拒（鱼太多且没有可聚拢的鱼楼）')
+        const noGather = args.get('no-fish-gather') === true
+        const target = fishCfg.gatherEnabled && !noGather ? fishPlan.gatherTarget : null
+        if (target) {
+          const age = checkCommentAge(target.ctime)
+          if (!age.ok) { printAgeBlock(age); process.exit(3) }
+          root = target.rpid
+          parent = target.rpid
+          const mention = `@${target.uname || target.mid || target.rpid}`
+          if (!String(message).startsWith(mention)) message = `${mention} ${message}`
+          if (fishPlan.gatherFallback) {
+            console.log('  → 没有满足条件的鱼楼；按「强制聚拢」选回复最少/最新的鱼楼，仍然回一条 ✓')
+          }
+          console.log(`  → 鱼太多，改成回 ${target.uname || target.rpid} 的楼层（rpid ${target.rpid}）`)
+        } else if (go) {
+          console.error('  → 鱼太多，且没有可聚拢的鱼楼：这次不发新楼层（留到下一趟）')
+          process.exit(3)
+        } else {
+          console.log('  [dry] 真发时会被拒（鱼太多且没有可聚拢的鱼楼）')
+        }
       }
     }
   } else {
@@ -382,6 +411,24 @@ const FISH_GATHER = Boolean(
 )
 if (FISH_GATHER) {
   console.log('  [额度] 这条聚拢回复占**主动评论额度**（不是回复额度）；别人再回这层楼才占回复额度 ✓')
+}
+
+// ── 开楼味检查（2026-11-15 主人定）：自己开一楼不能像鱼群号/人机，套话和打卡式直接拒 ──
+{
+  const raw = String(message ?? '')
+  const plain = raw.replace(/[\s，,。！!？?～~、…“”"'‘’（）()【】\[\]]/g, '')
+  const issues = []
+  if (!parent && !SHARE) {
+    if (/^@/u.test(raw.trim())) issues.push('开楼不要以 @ 开头——那是回复的写法')
+    if (/^(前排|沙发|打卡)/u.test(plain)) issues.push('开楼像鱼群打卡（前排/沙发/打卡）')
+    if ([...plain].length < 4) issues.push('开楼太短，像刷屏')
+    if (/^(我是|本鱼是|作为|身为)(一条|只)?(大?肥)?鱼|^本鱼|^鱼鱼/u.test(plain)) issues.push('开楼别自称鱼/鱼鱼，像鱼群号')
+  }
+  if (issues.length) {
+    console.error(`\n❌ 开楼味检查没过：${issues.join('；')}`)
+    console.error('   开楼要提视频里的一个具体画面/一句台词/一个数字，像你自己在说话；别用鱼群打卡套话，--force 也不放行 ✗')
+    process.exit(9)
+  }
 }
 
 // ── 人机味检查（2026-11-11 主人要求）：公开评论要像人，套话/纯夸奖/书面长句直接拒 ──
@@ -529,6 +576,13 @@ console.log(`  code=${out.code} message=${out.message ?? ''}`)
 if (out.code === 0) {
   const rpid = out.data?.rpid_str ?? out.data?.rpid
   console.log(`  ✅ 已发布，评论 rpid=${rpid}`)
+  // 开楼额度：成功了才记账，失败不扣；同一趟第二次顶层会被入口拦下。
+  if (topFloorIntent && !parent && !SHARE) {
+    fishState.topFloor ??= {}
+    fishState.topFloor[topFloorKey] = new Date().toISOString()
+    saveFishGuardState(fishState)
+    console.log(`  [开楼] 这趟第一楼已用掉（${topFloorKey}）`)
+  }
   // 鱼群保护：这条如果是“聚拢”到某条鱼楼的回复，记一笔，避免下次又回同一条。
   if (fishPlan?.ok && fishPlan.gatherTarget && parent
       && String(parent) === String(fishPlan.gatherTarget.rpid)) {

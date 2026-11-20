@@ -262,6 +262,8 @@ export function runVectorMemoryMaintenance({
           embeddedEntries.push({
             id: record.id, textHash: record.textHash || '', text: record.text, title: record.title,
             platform: record.platform, scope: record.scope, source: record.source, speaker: record.speaker,
+            senderId: record.senderId, groupId: record.groupId, conversationKey: record.conversationKey,
+            private: record.private === true, isOwner: record.isOwner === true,
             importance: record.importance, sensitive: record.sensitive === true, createdAt: record.createdAt,
           });
           embeddedVectors.push(result.vectors[i]);

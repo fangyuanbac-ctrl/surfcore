@@ -47,6 +47,7 @@ import * as memoryCard from '../src/memory-card.js';
 import * as vectorMemory from '../src/vector-memory.js';
 import * as characterStore from '../src/character-persona.js';
 import * as biliCard from '../src/bili-card.js';
+import * as promptPolicy from '../plugins/surfcore/tools/lib/prompt-policy.mjs';
 import * as historyCatchup from '../src/history-catchup.js';
 import * as purposeEngine from '../src/purpose-engine.js';
 import * as sessionRollover from '../src/session-rollover.js';
@@ -274,13 +275,20 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...dshHealth,
     synthesizeToFile,
     ...tokenBudget,
-    ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...vectorMemory, ...biliCard, ...characterStore, ...historyCatchup,
+    ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...vectorMemory, ...biliCard, ...characterStore, ...historyCatchup, ...promptPolicy,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
     ...conversationClosure,
     ...sessionRollover,
     ...wakeBatch,
     ...wakeFilter,
+    // 共享记忆（跨平台热事件/自我锚点/跨天摘要）：测试里固定为空，避免读真实用户目录。
+    renderHotBlock: () => '',
+    renderSelfBlock: () => '',
+    renderDigestBlock: () => '',
+    appendHotEvent: () => {},
+    appendDigest: () => {},
+    appendSelfNote: () => {},
     // 角色系统在 fixture 里等价于「没有角色」：当前角色 null，记忆卡指向 temp/dsh/surfcore/memory。
     // 不能直接用真实 character-store 的 DSH_HOME（它在主进程 import 时已固定）。
     readCurrentCharacter: () => null,

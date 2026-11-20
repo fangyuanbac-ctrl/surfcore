@@ -43,7 +43,9 @@ export const DEFAULT_PURPOSE_CONFIG = Object.freeze({
   retryMs: 15 * 60 * 1000,
   maxAttempts: 3,
   historyLimit: 60,
-  pendingTtlDays: 14,
+  // 2026-11-14：旧 pending 每轮注入会让同一件事一直“惦记着”；
+  // 只保留最近 3 天，超过的不再进提示词，也不再作为候选。
+  pendingTtlDays: 3,
   maxCandidates: 6,
   promptMaxChars: 16000,
 });
@@ -336,8 +338,17 @@ export function ensurePurposeDay(state, now = Date.now()) {
 
 /** 首次启动 / 状态里没有 nextFireAt 时，排一个初始延迟（落在安静时段就推到安静结束）。 */
 export function ensurePurposeSchedule(state, { now = Date.now(), config = DEFAULT_PURPOSE_CONFIG, random = Math.random } = {}) {
-  if (!state.nextFireAt) {
-    let at = now + Math.max(MINUTE, Math.min(config.initialDelayMinMs, config.gapMinMs));
+  // 旧代码按 10 分钟~2 小时排程，升级后状态里可能还留着一个「刚发完 23 分钟又该发」的
+  // nextFireAt。这里按新的 gapMin 兜底，避免重启后第一枪仍然过早。
+  const floor = state.lastOutcome === 'sent' && Number(state.lastSentAt) > 0
+    ? Number(state.lastSentAt) + Math.max(MINUTE, Number(config.gapMinMs) || MINUTE)
+    : 0;
+  if (state.nextFireAt) {
+    if (floor && state.nextFireAt < floor) {
+      state.nextFireAt = inQuietHours(floor, config) ? quietEndAfter(floor, config) : floor;
+    }
+  } else {
+    let at = Math.max(now + Math.max(MINUTE, Math.min(config.initialDelayMinMs, config.gapMinMs)), floor);
     if (inQuietHours(at, config)) at = quietEndAfter(at, config) + Math.round(random() * 20 * MINUTE);
     state.nextFireAt = at;
   }
@@ -430,6 +441,16 @@ export function markPurposeSkip(state, { now = Date.now(), reason = '', nextFire
  * 一轮结束后的状态迁移。
  * outcome: sent（真发出）/ silent（她选择不发）/ failed（投递或回合出错）/ delivery-failed
  */
+const GOAL_COOLDOWN_SHARE_MS = 24 * HOUR;
+const GOAL_COOLDOWN_ASK_MS = 48 * HOUR;
+const GOAL_COOLDOWN_EXHAUSTED_MS = 7 * DAY;
+function goalCooldownMs(goal) {
+  if ((Number(goal?.attempts) || 0) >= 2) return GOAL_COOLDOWN_EXHAUSTED_MS;
+  return ['ask', 'invite', 'curiosity', 'follow'].includes(String(goal?.action || ''))
+    ? GOAL_COOLDOWN_ASK_MS
+    : GOAL_COOLDOWN_SHARE_MS;
+}
+
 export function applyPurposeOutcome(state, {
   now = Date.now(),
   config = DEFAULT_PURPOSE_CONFIG,
@@ -463,6 +484,9 @@ export function applyPurposeOutcome(state, {
     if (state.lastOutcome === 'sent') {
       if (goal.status === 'hypothesis') goal.status = 'active';
       goal.confidence = Math.min(0.95, (Number(goal.confidence) || 0.3) + 0.03);
+      // 问过就进入冷却：同一目标不能在下一轮、或隔几轮后换个说法再问。
+      goal.lastAskedAt = now;
+      goal.cooldownUntil = Math.max(Number(goal.cooldownUntil) || 0, now + goalCooldownMs(goal));
     } else {
       goal.confidence = Math.max(0.05, (Number(goal.confidence) || 0.3) - 0.03);
     }
@@ -516,6 +540,7 @@ export function applyPurposeOutcome(state, {
     text: state.lastText,
     skipReason: state.lastSkipReason || '',
     planned: clip(planned?.text || '', 120),
+    topic: clip(planned?.topic || '', 40),
     sourceId: clip(planned?.sourceId || '', 80),
     goalId,
     goalOwner: goal?.owner || planned?.goalOwner || '',
@@ -534,7 +559,13 @@ export function applyPurposeOutcome(state, {
 export function prunePurposeState(state, { now = Date.now(), config = DEFAULT_PURPOSE_CONFIG } = {}) {
   const ttlMs = Math.max(1, Number(config.pendingTtlDays) || DEFAULT_PURPOSE_CONFIG.pendingTtlDays) * DAY;
   state.pending = (Array.isArray(state.pending) ? state.pending : [])
-    .filter((p) => p && p.text && (!p.expiresAt || Number(p.expiresAt) > now))
+    .filter((p) => {
+      if (!p || !p.text) return false;
+      if (p.expiresAt && Number(p.expiresAt) <= now) return false;
+      // 旧状态里的 expiresAt 可能是按 14 天写的；同时按 createdAt 再兜一层。
+      if (Number(p.createdAt) > 0 && now - Number(p.createdAt) > ttlMs) return false;
+      return true;
+    })
     .map((p) => ({ ...p, expiresAt: Number(p.expiresAt) || now + ttlMs }))
     .slice(-20);
   const limit = Math.max(10, Number(config.historyLimit) || DEFAULT_PURPOSE_CONFIG.historyLimit);
@@ -819,14 +850,17 @@ export function textSimilarity(a, b) {
   return inter / (A.size + B.size - inter);
 }
 
-export function isDuplicateText(text, history = [], threshold = 0.55) {
+export function isDuplicateText(text, history = [], threshold = 0.45, topic = '') {
   const target = String(text ?? '').trim();
   if (!target) return true;
+  const topicText = String(topic ?? '').trim();
   for (const h of history) {
     if (!h) continue;
     if (textSimilarity(target, h.purpose || '') >= threshold) return true;
     if (textSimilarity(target, h.planned || '') >= threshold) return true;
     if (h.text && textSimilarity(target, h.text) >= threshold) return true;
+    // 同一个话题换了说法也要拦住：mer / 教程 / 那个班 这类短话题最容易复读。
+    if (topicText && h.topic && textSimilarity(topicText, h.topic) >= 0.6) return true;
   }
   return false;
 }
@@ -1232,6 +1266,8 @@ function normalizeGoal(raw, now = Date.now()) {
     attempts: clampInt(raw.attempts, 0, 0, 20),
     lastActionAt: Number(raw.lastActionAt) || 0,
     lastFeedbackAt: Number(raw.lastFeedbackAt) || 0,
+    lastAskedAt: Number(raw.lastAskedAt) || 0,
+    cooldownUntil: Number(raw.cooldownUntil) || 0,
     sightings: clampInt(raw.sightings, 1, 1, 99),
     source: String(raw.source ?? 'event').slice(0, 12),
   };
@@ -1289,6 +1325,8 @@ function makeGoal({
     attempts: 0,
     lastActionAt: 0,
     lastFeedbackAt: 0,
+    lastAskedAt: 0,
+    cooldownUntil: 0,
     sightings: 1,
     source,
   };
@@ -1332,6 +1370,9 @@ function hypothesesForEvent(event, { drives, now, lastMasterAt, hoursSinceMaster
     // 群聊里主人说的话不是「主动私聊找主人」的素材：那是群聊回合该处理的事。
     if (!isPrivate) return out;
     if (!meaningful) return out;
+    // 主人说「这说过了 / 问过了」是在关话题，不是给她的新素材；不要把它变成
+    // 「主人刚提到…想接着聊聊」的新目标，否则下一轮又会绕着同一件事。
+    if (ANSWERED_REPLY_RE.test(ownerText)) return out;
     if (!isLife) {
       // 私聊里主人在聊技术/作品/见闻：不要写成高置信度的「关心」，只记成「想接着聊」。
       out.push(makeGoal({
@@ -1495,9 +1536,12 @@ function mergeGoal(goals, incoming, { fresh = true } = {}) {
 
 const POSITIVE_REPLY_RE = /好|可以|一起|哈哈|笑死|行|来|试试|喜欢|想|当然|没问题|可爱|不错/;
 const NEGATIVE_REPLY_RE = /不要|不想|不用|没空|没兴趣|算了|下次吧|别|忙/;
+// 主人说“这说过了 / 问过了 / 刚说过”不是在夸她记性好，是在明确叫停这个话题。
+const ANSWERED_REPLY_RE = /说过了|问过了|刚说过|讲过了|聊过了|不是问过|问第二遍/;
 function classifyOwnerReply(text) {
   const raw = String(text ?? '');
   if (!raw) return 'none';
+  if (ANSWERED_REPLY_RE.test(raw)) return 'negative';
   // 先判否定：否则「不想」会先命中正面的「想」。
   if (NEGATIVE_REPLY_RE.test(raw)) return 'negative';
   if (POSITIVE_REPLY_RE.test(raw)) return 'positive';
@@ -1525,13 +1569,19 @@ export function applyGoalFeedback(goals, materials, now = Date.now()) {
       goal.status = 'rejected';
       goal.confidence = Math.max(0.05, Number(goal.confidence) - 0.25);
       goal.value = Math.max(0.05, Number(goal.value) - 0.1);
+      // 被明确叫停 / 被否定的目标，给一段长冷却；新证据仍可把它拉回 hypothesis。
+      goal.cooldownUntil = Math.max(Number(goal.cooldownUntil) || 0, now + GOAL_COOLDOWN_EXHAUSTED_MS);
       goal.lastFeedbackAt = now;
     } else if (cls === 'neutral') {
-      goal.confidence = Math.min(0.95, Number(goal.confidence) + 0.02);
+      // 主人回了，哪怕是“在另一个窗口 / 知道了”这种中性答复，也算这轮有回应。
+      // 不加置信度，给同目标一段冷却：同一件事不要因为回答不够热情就再问一遍。
+      goal.confidence = Math.max(0.05, Number(goal.confidence) - 0.02);
+      goal.cooldownUntil = Math.max(Number(goal.cooldownUntil) || 0, now + goalCooldownMs(goal));
       goal.lastFeedbackAt = now;
     } else if (Number(goal.attempts) >= 2 && now - since > 24 * HOUR) {
       // 问过两次都没回音：别追了，慢慢降（记下检查点，避免每轮重复扣）。
       goal.confidence = Math.max(0.05, Number(goal.confidence) - 0.08);
+      goal.cooldownUntil = Math.max(Number(goal.cooldownUntil) || 0, now + GOAL_COOLDOWN_EXHAUSTED_MS);
       goal.lastFeedbackAt = now;
       if (goal.confidence < 0.15) goal.status = 'expired';
     }
@@ -1546,10 +1596,16 @@ export function pruneGoals(goals, now = Date.now()) {
     .sort((a, b) => (b.confidence * b.value) - (a.confidence * a.value));
   // 每个需要最多留 5 个：记忆卡里 8 条「和主人有关」的记忆不该把候选全挤成 connect。
   const byDomain = new Map();
+  const seenIntents = new Set();
   const kept = [];
   for (const goal of sorted) {
     const count = byDomain.get(goal.domain) || 0;
     if (count >= 5) continue;
+    // 同一归属 + 同一需求 + 同一句 intent，只留置信度最高的那一个。
+    // 否则不同素材会生成一堆「想问问主人现在在做什么」的同义目标，轮流复读。
+    const intentKey = `${goal.owner}|${goal.domain}|${String(goal.intent || '').replace(/\s+/g, '').toLowerCase()}`;
+    if (seenIntents.has(intentKey)) continue;
+    seenIntents.add(intentKey);
     byDomain.set(goal.domain, count + 1);
     kept.push(goal);
     if (kept.length >= 30) break;
@@ -1881,14 +1937,16 @@ export function selectPurpose({
   lastMasterAt = 0,
   random = Math.random,
 } = {}) {
-  const recent = (Array.isArray(history) ? history : []).slice(-10);
+  const recent = (Array.isArray(history) ? history : [])
+    .filter((h) => h && (!Number(h.at) || now - Number(h.at) <= 72 * HOUR))
+    .slice(-30);
   const query = normalizeDrives(drives);
   const hoursSinceMaster = lastMasterAt > 0 ? Math.max(0, (now - lastMasterAt) / HOUR) : 24;
   const candidates = [];
   const add = (item, weight, fromPending) => {
     const text = clip(item?.text, 120);
     if (!text) return;
-    if (isDuplicateText(text, recent)) return;
+    if (isDuplicateText(text, recent, 0.45, item?.topic)) return;
     // 同一个目标已经主动说过：就算换了措辞也不重复。
     if (item?.goalId && recent.some((h) => h && h.goalId === item.goalId)) return;
     // 同一件 B站 视频 / 同一条记忆已经用过：就算措辞不同也换一个，别复读。
@@ -1935,11 +1993,19 @@ export function selectPurpose({
   for (const goal of Array.isArray(goals) ? goals : []) {
     // 被拒绝/已完成/过期的目标不再主动提；新证据会把 rejected 重新变回 hypothesis。
     if (!goal || ['rejected', 'done', 'expired'].includes(goal.status)) continue;
+    // 问过还没到冷却期：同一条目标不再进候选（这是复读的主要入口）。
+    if (Number(goal.cooldownUntil) > now) continue;
     const candidate = goalToCandidate(goal);
     if (candidate) add(candidate, 1, false);
   }
   for (const seed of Array.isArray(seeds) ? seeds : []) add(seed, seed?.weight ?? 1, false);
-  for (const p of Array.isArray(pending) ? pending : []) add(p, (Number(p?.weight) || 1) + 0.35, true);
+  for (const p of Array.isArray(pending) ? pending : []) {
+    // pending 过期/太老的不再作为候选；旧状态里的 expiresAt 可能还是 14 天，按 createdAt 兜底。
+    if (Number(p?.createdAt) > 0 && now - Number(p.createdAt) > 72 * HOUR) continue;
+    // 「等他回…」这种 ask 型 pending：主人此后已经说过话，就不再算“还惦记着”。
+    if (String(p?.kind || '') === 'ask' && Number(p?.createdAt) > 0 && lastMasterAt > Number(p.createdAt)) continue;
+    add(p, (Number(p?.weight) || 1) + 0.35, true);
+  }
 
   // 驱动越高的需要，越容易在这一次被选中；寂寞/羡慕这种情绪会再推一把。
   for (const c of candidates) {
@@ -2127,9 +2193,21 @@ export function buildPurposePrompt({
     lines.push('');
   }
 
-  if (pending.length) {
+  const lastOwnerAt = (Array.isArray(materials) ? materials : [])
+    .filter((m) => m?.kind === 'owner' && Number(m.at) > 0)
+    .reduce((max, m) => Math.max(max, Number(m.at)), 0);
+  const recentPending = (Array.isArray(pending) ? pending : [])
+    .filter((p) => {
+      if (!p || !p.text) return false;
+      if (Number(p.createdAt) > 0 && now - Number(p.createdAt) > 72 * HOUR) return false;
+      // ask 型 pending 是「等他回」；主人之后已经说过话，就不再注入，避免她拿旧问题复读。
+      if (String(p.kind || '') === 'ask' && Number(p.createdAt) > 0 && lastOwnerAt > Number(p.createdAt)) return false;
+      return true;
+    })
+    .slice(-5);
+  if (recentPending.length) {
     lines.push('【你心里还惦记着】');
-    lines.push(...pending.slice(-5).map((p) => `- ${clip(p.text, 90)}（${kindLabel(p.kind)}）`));
+    lines.push(...recentPending.map((p) => `- ${clip(p.text, 90)}（${kindLabel(p.kind)}）`));
     lines.push('');
   }
 
@@ -2171,11 +2249,13 @@ export function buildPurposePrompt({
   }
 
   const recent = (Array.isArray(history) ? history : [])
-    .filter((h) => h && (h.purpose || h.text) && h.outcome === 'sent')
-    .slice(-3);
+    .filter((h) => h && (h.purpose || h.text) && h.outcome === 'sent'
+      && (!Number(h.at) || now - Number(h.at) <= 72 * HOUR))
+    .slice(-8);
   if (recent.length) {
     lines.push('【最近你已经主动说过，别重复】');
     lines.push(...recent.map((h) => `- ${relTime(h.at, now)}：${clip(h.purpose || h.text, 60)}`));
+    lines.push('（同一件事如果最近 3 天已经提过、主人也回应过，就不要再换一种说法问；换一个话题，或者这次不发。）');
     lines.push('');
   }
 

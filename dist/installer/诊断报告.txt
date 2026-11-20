@@ -1,0 +1,32 @@
+=== SurfCore 诊断报告 ===
+生成时间：2026/11/8 02:36:04
+系统：win32 10.0.26200 (x64)
+Node：v24.21.0
+DSH_HOME：C:\Users\1\.dsh
+安装目录：C:\Users\1\surfcore\dist\installer\surfcore
+
+--- DSH ---
+profiles：desktop、web
+  desktop: bundle=surfcore / patch=有
+  web: bundle=(无) / patch=无
+
+--- SnowLuma ---
+监听端口：(没有：SnowLuma 没开或没登录)
+SnowLuma 安装目录：(家目录没找到，可能装在别处)
+
+--- 依赖 ---
+node_modules：不存在
+express：没有
+@snowluma/sdk：没有
+
+--- 配置 ---
+config.json：不存在
+
+--- 插件日志（最后 12 行）---
+[2026-11-07T18:34:06.720Z] 生物钟未启动：B站 还没登录（设置 → B站 → 扫码登录），避免空转消耗 token
+[2026-11-07T18:34:06.767Z] 角色系统：已从旧数据迁移出「傲娇助手」（备份 $DSH_HOME\surfcore\backups\character-migration-2026-11-07T18-34-06-724Z）
+[2026-11-07T18:34:06.773Z] 生物钟未启动：B站 还没登录（设置 → B站 → 扫码登录），避免空转消耗 token
+[2026-11-07T18:34:06.802Z] 已激活 v0.8.9；surfcore=%USERPROFILE%\surfcore；biliTools=%USERPROFILE%\surfcore\plugins\surfcore\tools\bili.mjs；privacy=v3
+[2026-11-07T18:34:06.950Z] autoStartBridge：桥接未运行，尝试启动
+[2026-11-07T18:34:10.744Z] autoStartBridge 结果： 桥接已启动
+[2026-11-07T18:34:31.346Z] [updates] 检查完成：0 个组件有更新
